@@ -148,6 +148,8 @@ import "./index.scss";
 
 import { ExcalidrawPlusPromoBanner } from "./components/ExcalidrawPlusPromoBanner";
 import { AppSidebar } from "./components/AppSidebar";
+import { RepositoryNotesDialog } from "./components/RepositoryNotesDialog";
+import { loadRepositoryNote, saveRepositoryNote } from "./data/repositoryNotes";
 
 import type { CollabAPI } from "./collab/Collab";
 
@@ -396,6 +398,7 @@ const ExcalidrawWrapper = () => {
   }
 
   const debugCanvasRef = useRef<HTMLCanvasElement>(null);
+  const appRootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     trackEvent("load", "frame", getFrame());
@@ -451,6 +454,76 @@ const ExcalidrawWrapper = () => {
   });
 
   const [, forceRefresh] = useState(false);
+  const [repositoryDialog, setRepositoryDialog] = useState<
+    "save" | "open" | null
+  >(null);
+  const [repositoryNoteName, setRepositoryNoteName] = useState<string | null>(
+    null,
+  );
+
+  const saveToRepository = useCallback(
+    async (name: string) => {
+      if (!name.trim() || !excalidrawAPI) {
+        throw new Error("Enter a file name");
+      }
+      const savedName = await saveRepositoryNote(
+        name,
+        excalidrawAPI.getSceneElementsIncludingDeleted(),
+        excalidrawAPI.getAppState(),
+        excalidrawAPI.getFiles(),
+      );
+      setRepositoryNoteName(savedName);
+      excalidrawAPI.setToast({ message: `Saved ${savedName}`, duration: 1500 });
+    },
+    [excalidrawAPI],
+  );
+
+  const openFromRepository = useCallback(
+    async (name: string) => {
+      if (!excalidrawAPI) {
+        return;
+      }
+      const data = await loadRepositoryNote(name);
+      excalidrawAPI.updateScene({
+        elements: restoreElements(data.elements, null, {
+          repairBindings: true,
+        }),
+        appState: restoreAppState(data.appState, excalidrawAPI.getAppState()),
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      });
+      if (data.files) {
+        excalidrawAPI.addFiles(Object.values(data.files));
+      }
+      setRepositoryNoteName(name);
+      excalidrawAPI.setToast({ message: `Opened ${name}`, duration: 1500 });
+    },
+    [excalidrawAPI],
+  );
+
+  useEffect(() => {
+    const ownerDocument = appRootRef.current?.ownerDocument;
+    const ownerWindow = ownerDocument?.defaultView;
+    if (!ownerDocument || !ownerWindow) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        repositoryNoteName &&
+        event.key.toLowerCase() === "s" &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.shiftKey &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        void saveToRepository(repositoryNoteName).catch((error: Error) => {
+          excalidrawAPI?.setToast({ message: error.message, duration: 3000 });
+        });
+      }
+    };
+    ownerWindow.addEventListener("keydown", onKeyDown, true);
+    return () => ownerWindow.removeEventListener("keydown", onKeyDown, true);
+  }, [excalidrawAPI, repositoryNoteName, saveToRepository]);
 
   useEffect(() => {
     if (isDevEnv()) {
@@ -940,6 +1013,7 @@ const ExcalidrawWrapper = () => {
 
   return (
     <div
+      ref={appRootRef}
       style={{ height: "100%" }}
       className={clsx("excalidraw-app", {
         "is-collaborating": isCollaborating,
@@ -1033,7 +1107,31 @@ const ExcalidrawWrapper = () => {
           isCollabEnabled={!isCollabDisabled}
           theme={appTheme}
           refresh={() => forceRefresh((prev) => !prev)}
+          onSaveRepository={() => {
+            if (repositoryNoteName) {
+              void saveToRepository(repositoryNoteName).catch(
+                (error: Error) => {
+                  excalidrawAPI?.setToast({
+                    message: error.message,
+                    duration: 3000,
+                  });
+                },
+              );
+            } else {
+              setRepositoryDialog("save");
+            }
+          }}
+          onOpenRepository={() => setRepositoryDialog("open")}
         />
+        {repositoryDialog && (
+          <RepositoryNotesDialog
+            mode={repositoryDialog}
+            initialName={repositoryNoteName}
+            onClose={() => setRepositoryDialog(null)}
+            onSave={saveToRepository}
+            onOpen={openFromRepository}
+          />
+        )}
         <AppWelcomeScreen
           onCollabDialogOpen={onCollabDialogOpen}
           isCollabEnabled={!isCollabDisabled}

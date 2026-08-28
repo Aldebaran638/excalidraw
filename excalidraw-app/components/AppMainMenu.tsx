@@ -2,6 +2,8 @@ import {
   loginIcon,
   ExcalLogo,
   eyeIcon,
+  LoadIcon,
+  save,
 } from "@excalidraw/excalidraw/components/icons";
 import { useI18n } from "@excalidraw/excalidraw/i18n";
 import { MainMenu } from "@excalidraw/excalidraw/index";
@@ -22,12 +24,20 @@ export const AppMainMenu: React.FC<{
   isCollabEnabled: boolean;
   theme: Theme | "system";
   refresh: () => void;
+  onSaveRepository: () => void;
+  onOpenRepository: () => void;
 }> = React.memo((props) => {
   const { t } = useI18n();
   return (
     <MainMenu>
       <MainMenu.DefaultItems.LoadScene />
       <MainMenu.DefaultItems.SaveToActiveFile />
+      <MainMenu.Item icon={save} onSelect={props.onSaveRepository}>
+        Save to repository
+      </MainMenu.Item>
+      <MainMenu.Item icon={LoadIcon} onSelect={props.onOpenRepository}>
+        Open repository note
+      </MainMenu.Item>
       <MainMenu.DefaultItems.Export />
       <MainMenu.DefaultItems.SaveAsImage />
       {props.isCollabEnabled && (
