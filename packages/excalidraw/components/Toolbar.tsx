@@ -37,6 +37,7 @@ import {
   isToolButtonDisabled,
   LassoToolButton,
   LineToolButton,
+  MatrixToolButton,
   RectangleToolButton,
   SelectionToolButton,
   SelectionToolPopover,
@@ -289,6 +290,9 @@ export const Toolbar = ({
         <TextToolButton {...toolProps} />
         {UIOptions.tools?.image !== false && <ImageToolButton {...toolProps} />}
         <EraserToolButton {...toolProps} />
+        {UIOptions.tools?.matrix !== false && (
+          <MatrixToolButton {...toolProps} />
+        )}
 
         <div
           className="App-toolbar__divider"

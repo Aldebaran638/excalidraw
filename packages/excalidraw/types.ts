@@ -162,7 +162,8 @@ export type ToolType =
   | "embeddable"
   | "laser"
   | "autoshape"
-  | "bucketfill";
+  | "bucketfill"
+  | "matrix";
 
 export type ElementOrToolType = ExcalidrawElementType | ToolType | "custom";
 
@@ -914,10 +915,11 @@ export interface ExcalidrawProps {
    * via `interaction.enabled.tools`. Otherwise the editor stays on (or, when
    * non-interactive, resets to) the `selection` tool, and the forced tool is
    * applied once it becomes activatable. `image` cannot be forced (its
-   * activation opens the file picker).
+   * activation opens the file picker). `matrix` cannot be forced because it
+   * immediately opens the native matrix dialog.
    */
   activeTool?:
-    | { type: Exclude<ToolType, "image"> }
+    | { type: Exclude<ToolType, "image" | "matrix"> }
     | { type: "custom"; customType: string };
   zenModeEnabled?: boolean;
   gridModeEnabled?: boolean;
@@ -1067,6 +1069,7 @@ export type UIOptions = Partial<{
   canvasActions: CanvasActions;
   tools: {
     image: boolean;
+    matrix: boolean;
   };
   /**
    * Optionally control the editor form factor and desktop UI mode from the host app.
@@ -1165,9 +1168,21 @@ export type AppClassProperties = {
 
   setAppState: App["setAppState"];
 
+  /** Returns the active text editor selection for inline text formatting. */
+  getTextColorSelection: () => TextColorSelection | null;
+  setTextColorSelectionProvider: (provider: TextColorSelectionProvider) => void;
+
   isInteractionEnabled: App["isInteractionEnabled"];
   isNavigationEnabled: App["isNavigationEnabled"];
 };
+
+export type TextColorSelection = Readonly<{
+  elementId: string;
+  start: number;
+  end: number;
+}>;
+
+export type TextColorSelectionProvider = (() => TextColorSelection) | null;
 
 export type PointerDownState = Readonly<{
   // The first position at which pointerDown happened

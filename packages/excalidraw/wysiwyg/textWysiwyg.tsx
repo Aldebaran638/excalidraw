@@ -40,6 +40,7 @@ import { getLineWidth } from "@excalidraw/element";
 import { normalizeText } from "@excalidraw/element";
 import { wrapText } from "@excalidraw/element";
 import { getWrappedTextLines } from "@excalidraw/element";
+import { getTextColorRanges, getTextColorSegments } from "@excalidraw/element";
 import {
   isArrowElement,
   isBoundToContainer,
@@ -241,6 +242,8 @@ export const textWysiwyg = ({
     x: number;
     y: number;
   } | null = null;
+  let richTextPreview: HTMLDivElement | null = null;
+  let updateRichTextPreview = () => {};
 
   const textPropertiesUpdated = (
     updatedTextElement: ExcalidrawTextElement,
@@ -408,6 +411,7 @@ export const textWysiwyg = ({
         opacity: updatedTextElement.opacity / 100,
         maxHeight: `${editorMaxHeight}px`,
       });
+      updateRichTextPreview();
       currentTextLayout = {
         angle: angle as Radians,
         font,
@@ -469,6 +473,81 @@ export const textWysiwyg = ({
     boxSizing: "content-box",
   });
   editable.value = element.originalText;
+  richTextPreview = ownerDocument.createElement("div");
+  richTextPreview.dir = "auto";
+  richTextPreview.setAttribute("aria-hidden", "true");
+  richTextPreview.classList.add("excalidraw-wysiwyg-rich-preview");
+  updateRichTextPreview = () => {
+    if (!richTextPreview) {
+      return;
+    }
+    const currentElement = app.scene.getElement(element.id);
+    if (!currentElement || !isTextElement(currentElement)) {
+      return;
+    }
+
+    const ranges = getTextColorRanges({
+      ...currentElement,
+      text: editable.value,
+      originalText: editable.value,
+    });
+    richTextPreview.replaceChildren();
+    richTextPreview.hidden = !ranges.length;
+    if (!ranges.length) {
+      editable.style.color = applyDarkModeFilter(
+        currentElement.strokeColor,
+        app.state.theme === THEME.DARK,
+      );
+      editable.style.caretColor = editable.style.color;
+      editable.style.removeProperty("-webkit-text-fill-color");
+      return;
+    }
+
+    const lines = editable.value.replace(/\r\n?/g, "\n").split("\n");
+    let lineStart = 0;
+    for (let index = 0; index < lines.length; index++) {
+      for (const segment of getTextColorSegments(
+        lines[index],
+        lineStart,
+        ranges,
+        currentElement.strokeColor,
+      )) {
+        const span = ownerDocument.createElement("span");
+        span.style.color = applyDarkModeFilter(
+          segment.color,
+          app.state.theme === THEME.DARK,
+        );
+        span.textContent = segment.text;
+        richTextPreview.appendChild(span);
+      }
+      if (index < lines.length - 1) {
+        richTextPreview.appendChild(ownerDocument.createTextNode("\n"));
+      }
+      lineStart += lines[index].length + 1;
+    }
+
+    richTextPreview.style.cssText = editable.style.cssText;
+    richTextPreview.style.removeProperty("-webkit-text-fill-color");
+    Object.assign(richTextPreview.style, {
+      color: "transparent",
+      pointerEvents: "none",
+      userSelect: "none",
+    });
+    editable.style.color = "transparent";
+    editable.style.caretColor = applyDarkModeFilter(
+      currentElement.strokeColor,
+      app.state.theme === THEME.DARK,
+    );
+    editable.style.setProperty("-webkit-text-fill-color", "transparent");
+  };
+  // Keep the native selection available while the properties panel is open.
+  // This lets the stroke color picker format only the selected substring.
+  const textColorSelectionProvider = () => ({
+    elementId: element.id,
+    start: editable.selectionStart,
+    end: editable.selectionEnd,
+  });
+  app.setTextColorSelectionProvider(textColorSelectionProvider);
   updateWysiwygStyle();
 
   const getCaretIndexFromInitialSceneCoords = () => {
@@ -633,6 +712,7 @@ export const textWysiwyg = ({
         editable.selectionEnd = selectionStart;
       }
       onChange(editable.value);
+      updateRichTextPreview();
     };
   }
 
@@ -868,6 +948,11 @@ export const textWysiwyg = ({
     unsubOnChange();
     unbindOnScroll();
 
+    if (app.getTextColorSelection()?.elementId === element.id) {
+      app.setTextColorSelectionProvider(null);
+    }
+
+    richTextPreview?.remove();
     editable.remove();
   };
 
@@ -1029,9 +1114,15 @@ export const textWysiwyg = ({
     });
   });
   ownerWindow.addEventListener("beforeunload", handleSubmit);
-  excalidrawContainer
-    ?.querySelector(".excalidraw-textEditorContainer")!
-    .appendChild(editable);
+  const textEditorContainer = excalidrawContainer?.querySelector(
+    ".excalidraw-textEditorContainer",
+  );
+  if (textEditorContainer) {
+    if (richTextPreview) {
+      textEditorContainer.appendChild(richTextPreview);
+    }
+    textEditorContainer.appendChild(editable);
+  }
 
   return handleSubmit;
 };

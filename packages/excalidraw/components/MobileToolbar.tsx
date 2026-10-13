@@ -33,6 +33,7 @@ import {
   bucketFillIcon,
   mermaidLogoIcon,
   MagicIcon,
+  abacusIcon,
 } from "./icons";
 
 import "./ToolIcon.scss";
@@ -119,6 +120,7 @@ export const MobileToolbar = ({ app, setAppState }: MobileToolbarProps) => {
       "laser",
       "bucketfill",
       "magicframe",
+      "matrix",
     ] as const
   ).filter((tool) => {
     if (showTextToolOutside && tool === "text") {
@@ -145,6 +147,8 @@ export const MobileToolbar = ({ app, setAppState }: MobileToolbarProps) => {
       ? bucketFillIcon
       : activeTool.type === "magicframe"
       ? MagicIcon
+      : activeTool.type === "matrix"
+      ? abacusIcon
       : DotsIcon
     : DotsIcon;
 
@@ -288,6 +292,17 @@ export const MobileToolbar = ({ app, setAppState }: MobileToolbarProps) => {
               disabled={isToolButtonDisabled(app, "frame")}
             >
               {t("toolBar.frame")}
+            </DropdownMenu.Item>
+          )}
+          {app.props.UIOptions.tools?.matrix !== false && (
+            <DropdownMenu.Item
+              onSelect={() => app.setActiveTool({ type: "matrix" })}
+              icon={abacusIcon}
+              data-testid="toolbar-matrix"
+              selected={activeTool.type === "matrix"}
+              disabled={isToolButtonDisabled(app, "matrix")}
+            >
+              {t("toolBar.matrix")}
             </DropdownMenu.Item>
           )}
           <DropdownMenu.Item

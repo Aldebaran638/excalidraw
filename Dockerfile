@@ -1,6 +1,8 @@
-FROM --platform=${BUILDPLATFORM} node:24@sha256:8530f76a96d88820d288761f022e318970dda93d01536919fbc16076b7983e63 AS build
+FROM --platform=${BUILDPLATFORM} node:24@sha256:8530f76a96d88820d288761f022e318970dda93d01536919fbc16076b7983e63 AS dependencies
 
 WORKDIR /opt/node_app
+
+ARG TARGETARCH
 
 COPY . .
 
@@ -8,6 +10,16 @@ COPY . .
 # Error: Cannot find module @rollup/rollup-linux-x64-gnu
 RUN --mount=type=cache,target=/root/.cache/yarn \
     npm_config_target_arch=${TARGETARCH} yarn --frozen-lockfile --network-timeout 600000
+
+FROM dependencies AS development
+
+ENV NODE_ENV=development
+
+EXPOSE 3001
+
+CMD ["yarn", "--cwd", "./excalidraw-app", "start", "--host", "0.0.0.0"]
+
+FROM dependencies AS build
 
 ARG NODE_ENV=production
 

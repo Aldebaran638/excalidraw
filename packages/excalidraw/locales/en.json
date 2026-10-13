@@ -28,6 +28,7 @@
     "pasteStyles": "Paste styles",
     "stroke": "Stroke",
     "changeStroke": "Change stroke color",
+    "textColorSelectionTip": "Select text while editing to color only that part",
     "background": "Background",
     "changeBackground": "Change background color",
     "fill": "Fill",
@@ -336,10 +337,36 @@
     "laser": "Laser pointer",
     "autoshape": "Draw to shape",
     "bucketfill": "Bucket fill",
+    "matrix": "Matrix tool",
     "hand": "Hand (panning tool)",
     "extraTools": "More tools",
     "mermaidToExcalidraw": "Mermaid to Excalidraw",
     "convertElementType": "Toggle shape type"
+  },
+  "matrixDialog": {
+    "title": "Insert matrix",
+    "values": "Matrix values",
+    "quickFill": "Quick fill:",
+    "examples": {
+      "numbers": "Numbers",
+      "characters": "Characters",
+      "strings": "Strings"
+    },
+    "hint": "Columns: spaces, commas, or Tab. Rows: new lines or semicolons. Put quotes around strings containing spaces or commas.",
+    "dimensions": "{{rows}} × {{columns}} matrix",
+    "empty": "Enter a rectangular matrix",
+    "preview": "Matrix preview",
+    "insert": "Insert matrix",
+    "parseError": "Unable to parse matrix"
+  },
+  "repositorySync": {
+    "unbound": "Local note will be created on edit",
+    "pending": "Waiting to sync to local file…",
+    "syncing": "Syncing to local file…",
+    "synced": "Sync successful",
+    "external": "Loaded local file update",
+    "missing": "Local note was deleted",
+    "error": "Local note sync failed"
   },
   "bucketfill": {
     "noRegion": "Couldn't find an enclosed region to fill here.",

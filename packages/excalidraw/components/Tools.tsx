@@ -29,6 +29,7 @@ import {
   handIcon,
   frameToolIcon,
   EmbedIcon,
+  abacusIcon,
 } from "./icons";
 
 import type {
@@ -147,6 +148,9 @@ export const TOOLS = defineTools({
   bucketfill: {
     icon: bucketFillIcon,
     letterKey: KEYS.B,
+  },
+  matrix: {
+    icon: abacusIcon,
   },
   lasso: {
     icon: LassoIcon,
@@ -326,6 +330,7 @@ export const TextToolButton = createToolButton("text");
 export const ImageToolButton = createToolButton("image");
 export const EraserToolButton = createToolButton("eraser");
 export const FrameToolButton = createToolButton("frame");
+export const MatrixToolButton = createToolButton("matrix");
 
 /**
  * The selection tool button — pointer-clicking it while the selection tool

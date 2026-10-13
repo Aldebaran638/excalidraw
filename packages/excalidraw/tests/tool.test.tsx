@@ -73,6 +73,18 @@ describe("setActiveTool()", () => {
     expect(h.state.activeTool.type).toBe("custom");
     expect(h.state.activeTool.customType).toBe("comment");
   });
+
+  it("opens the native matrix dialog", () => {
+    act(() => {
+      excalidrawAPI.setActiveTool({ type: "matrix" });
+    });
+
+    expect(h.state.activeTool.type).toBe("matrix");
+    expect(document.querySelector(".MatrixDialog")).not.toBeNull();
+
+    fireEvent.click(GlobalTestState.renderResult.getByText("Cancel"));
+    expect(h.state.activeTool.type).toBe("selection");
+  });
 });
 describe("findShapeByKey()", () => {
   const appWithPreferredTool = (

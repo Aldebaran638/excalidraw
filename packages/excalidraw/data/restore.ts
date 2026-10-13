@@ -226,6 +226,7 @@ export const AllowedExcalidrawActiveTools: Record<
   autoshape: false,
   magicframe: false,
   bucketfill: true,
+  matrix: true,
 };
 
 export type RestoredDataState = {

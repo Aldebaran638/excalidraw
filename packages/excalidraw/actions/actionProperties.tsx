@@ -62,6 +62,7 @@ import {
 } from "@excalidraw/element";
 
 import { hasStrokeColor } from "@excalidraw/element";
+import { applyTextColorRange, clearTextColorRanges } from "@excalidraw/element";
 
 import {
   updateElbowArrowPoints,
@@ -345,18 +346,50 @@ export const actionChangeStrokeColor = register<
   name: "changeStrokeColor",
   label: "labels.stroke",
   trackEvent: false,
-  perform: (elements, appState, value) => {
+  perform: (elements, appState, value, app) => {
+    const color = value?.currentItemStrokeColor;
+    const textSelection = app?.getTextColorSelection?.();
+    const hasTextSelection =
+      !!color && !!textSelection && textSelection.end > textSelection.start;
+
     return {
-      ...(value?.currentItemStrokeColor && {
+      ...(color && {
         elements: changeProperty(
           elements,
           appState,
           (el) => {
-            return hasStrokeColor(el.type)
-              ? newElementWith(el, {
-                  strokeColor: value.currentItemStrokeColor,
-                })
-              : el;
+            if (
+              hasTextSelection &&
+              isTextElement(el) &&
+              el.id === textSelection?.elementId
+            ) {
+              return newElementWith(
+                el,
+                {
+                  customData: applyTextColorRange(
+                    el,
+                    textSelection.start,
+                    textSelection.end,
+                    color,
+                  ).customData,
+                },
+                true,
+              );
+            }
+            if (!hasStrokeColor(el.type)) {
+              return el;
+            }
+            if (isTextElement(el)) {
+              const updates: {
+                strokeColor: string;
+                customData?: ExcalidrawTextElement["customData"];
+              } = { strokeColor: color };
+              if (el.customData?.richText) {
+                updates.customData = clearTextColorRanges(el).customData || {};
+              }
+              return newElementWith(el, updates);
+            }
+            return newElementWith(el, { strokeColor: color });
           },
           true,
         ),
@@ -397,6 +430,11 @@ export const actionChangeStrokeColor = register<
           appState={appState}
           updateData={updateData}
         />
+        {app.state.editingTextElement && (
+          <div className="color-picker__tip">
+            {t("labels.textColorSelectionTip")}
+          </div>
+        )}
       </>
     );
   },

@@ -28,6 +28,7 @@
     "pasteStyles": "粘贴样式",
     "stroke": "描边",
     "changeStroke": "更改描边颜色",
+    "textColorSelectionTip": "编辑文字时先选中部分文字，可只为选中内容设置颜色",
     "background": "背景",
     "changeBackground": "更改背景颜色",
     "fill": "填充",
@@ -336,10 +337,36 @@
     "laser": "激光笔",
     "autoshape": "",
     "bucketfill": "",
+    "matrix": "矩阵工具",
     "hand": "抓手（平移工具）",
     "extraTools": "更多工具",
     "mermaidToExcalidraw": "Mermaid 至 Excalidraw",
     "convertElementType": "切换形状种类"
+  },
+  "matrixDialog": {
+    "title": "插入矩阵",
+    "values": "矩阵内容",
+    "quickFill": "快速填入：",
+    "examples": {
+      "numbers": "数字",
+      "characters": "字符",
+      "strings": "字符串"
+    },
+    "hint": "列可用空格、逗号或 Tab 分隔；行可用换行或分号分隔。包含空格或逗号的字符串请用引号包裹。",
+    "dimensions": "{{rows}} × {{columns}} 矩阵",
+    "empty": "请输入一个矩形矩阵",
+    "preview": "矩阵预览",
+    "insert": "插入矩阵",
+    "parseError": "无法解析矩阵"
+  },
+  "repositorySync": {
+    "unbound": "编辑后将自动创建本地笔记",
+    "pending": "等待同步到本地文件…",
+    "syncing": "正在同步到本地文件…",
+    "synced": "同步成功",
+    "external": "已加载本地文件更新",
+    "missing": "本地笔记已删除",
+    "error": "本地笔记同步失败"
   },
   "bucketfill": {
     "noRegion": "",

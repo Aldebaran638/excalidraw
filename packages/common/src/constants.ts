@@ -329,6 +329,7 @@ export const DEFAULT_UI_OPTIONS: AppProps["UIOptions"] = {
   },
   tools: {
     image: true,
+    matrix: true,
   },
 };
 
@@ -501,6 +502,7 @@ export const TOOL_TYPE = {
   laser: "laser",
   autoshape: "autoshape",
   bucketfill: "bucketfill",
+  matrix: "matrix",
 } as const;
 
 export const EDITOR_LS_KEYS = {

@@ -1,0 +1,127 @@
+.excalidraw {
+  .MatrixDialog {
+    .Dialog__content {
+      margin-top: 0;
+    }
+
+    &__content {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    &__label {
+      color: var(--color-on-surface);
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+
+    &__examples {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    &__examplesLabel,
+    &__hint,
+    &__status {
+      color: var(--color-gray-60);
+      font-size: 0.75rem;
+    }
+
+    &__example {
+      padding: 0.25rem 0.5rem;
+      border: 1px solid var(--color-border-outline-variant);
+      border-radius: 0.35rem;
+      color: var(--color-on-surface);
+      background: var(--color-surface-lowest);
+      font: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+
+      &:hover,
+      &:focus-visible {
+        border-color: var(--color-primary);
+        color: var(--color-primary);
+      }
+    }
+
+    &__input {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 8rem;
+      resize: vertical;
+      padding: 0.75rem;
+      border: 1px solid var(--color-border-outline-variant);
+      border-radius: 0.5rem;
+      outline: none;
+      color: var(--color-on-surface);
+      background: var(--color-surface-lowest);
+      font-family: var(--font-family-monospace);
+      font-size: 0.875rem;
+      line-height: 1.6;
+
+      &:focus {
+        border-color: var(--color-primary);
+        box-shadow: 0 0 0 1px var(--color-primary);
+      }
+    }
+
+    &__hint,
+    &__error {
+      margin: 0;
+    }
+
+    &__status {
+      margin-top: -0.35rem;
+    }
+
+    &__status--error,
+    &__error {
+      color: var(--color-danger);
+    }
+
+    &__preview {
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      gap: 0.5rem;
+      max-height: 12rem;
+      padding: 0.75rem;
+      overflow: auto;
+      color: var(--color-on-surface);
+      background: var(--color-surface-low);
+      border-radius: 0.5rem;
+    }
+
+    &__previewGrid {
+      display: grid;
+      align-items: center;
+      gap: 0.35rem 1rem;
+
+      code {
+        min-width: 1.5rem;
+        color: inherit;
+        text-align: center;
+      }
+    }
+
+    &__bracket {
+      display: flex;
+      align-items: center;
+      font-family: serif;
+      font-size: 2.5rem;
+      font-weight: 300;
+      line-height: 1;
+      transform: scaleY(1.25);
+    }
+
+    &__actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+      padding-top: 0.25rem;
+    }
+  }
+}

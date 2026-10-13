@@ -133,6 +133,7 @@ import {
   newImageElement,
   newLinearElement,
   newTextElement,
+  createMatrixElements,
   refreshTextDimensions,
   deepCopyElement,
   duplicateElements,
@@ -257,6 +258,7 @@ import {
   isEligibleFrameChildType,
   getBindingStrategyForDraggingBindingElementEndpoints,
   isNonDeletedElement,
+  remapTextColorRanges,
 } from "@excalidraw/element";
 
 import type { GlobalPoint, LocalPoint, Radians } from "@excalidraw/math";
@@ -441,6 +443,7 @@ import { ContextMenu, CONTEXT_MENU_SEPARATOR } from "./ContextMenu";
 import { activeEyeDropperAtom } from "./EyeDropper";
 import { ViewportStatusBorder } from "./ViewportStatusFrame/ViewportStatusFrame";
 import LayerUI from "./LayerUI";
+import { MatrixDialog } from "./MatrixDialog";
 import { ElementCanvasButton } from "./MagicButton";
 import { SVGLayer } from "./SVGLayer";
 import Spinner from "./Spinner";
@@ -494,6 +497,8 @@ import type {
   GenerateDiagramToCode,
   NullableGridSize,
   UIConfig,
+  TextColorSelection,
+  TextColorSelectionProvider,
 } from "../types";
 import type { RoughCanvas } from "roughjs/bin/canvas";
 import type { Action, ActionResult } from "../actions/types";
@@ -708,6 +713,7 @@ class App extends React.Component<AppProps, AppState> {
   bindModeHandler: ReturnType<typeof setTimeout> | null = null;
   private textWysiwygSubmitHandler: ReturnType<typeof textWysiwyg> | null =
     null;
+  private textColorSelectionProvider: (() => TextColorSelection) | null = null;
 
   hitLinkElement?: NonDeletedExcalidrawElement;
   lastPointerDownEvent: React.PointerEvent<HTMLElement> | null = null;
@@ -2457,6 +2463,13 @@ class App extends React.Component<AppProps, AppState> {
                             currentUserControls={this.props.currentUserControls}
                           >
                             {this.props.children}
+                            {this.isDefaultUIEnabled() &&
+                              this.state.activeTool.type === "matrix" && (
+                                <MatrixDialog
+                                  onClose={this.closeMatrixDialog}
+                                  onInsert={this.insertMatrix}
+                                />
+                              )}
                           </LayerUI>
 
                           <div className="excalidraw-textEditorContainer" />
@@ -2695,6 +2708,14 @@ class App extends React.Component<AppProps, AppState> {
   public focusContainer: AppClassProperties["focusContainer"] = () => {
     this.excalidrawContainerRef.current?.focus();
   };
+
+  public getTextColorSelection: AppClassProperties["getTextColorSelection"] =
+    () => this.textColorSelectionProvider?.() ?? null;
+
+  public setTextColorSelectionProvider: AppClassProperties["setTextColorSelectionProvider"] =
+    (provider: TextColorSelectionProvider) => {
+      this.textColorSelectionProvider = provider;
+    };
 
   public getSceneElementsIncludingDeleted = () => {
     return this.scene.getElementsIncludingDeleted();
@@ -6143,6 +6164,34 @@ class App extends React.Component<AppProps, AppState> {
     });
   };
 
+  private closeMatrixDialog = () => {
+    this.setActiveTool({ type: "selection" });
+  };
+
+  private insertMatrix = (matrix: string[][]) => {
+    const center = viewportCoordsToSceneCoords(
+      {
+        clientX: this.state.offsetLeft + this.state.width / 2,
+        clientY: this.state.offsetTop + this.state.height / 2,
+      },
+      this.state,
+    );
+    const matrixElements = createMatrixElements(matrix, center);
+    const selectedElementIds: Record<string, true> = {};
+    matrixElements.forEach((element) => {
+      selectedElementIds[element.id] = true;
+    });
+    this.updateScene({
+      elements: [
+        ...this.scene.getElementsIncludingDeleted(),
+        ...matrixElements,
+      ],
+      appState: { selectedElementIds },
+      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+    });
+    this.setActiveTool({ type: "selection" });
+  };
+
   setOpenDialog = (dialogType: AppState["openDialog"]) => {
     this.setState({ openDialog: dialogType });
   };
@@ -6267,7 +6316,7 @@ class App extends React.Component<AppProps, AppState> {
         // Not sure why we include deleted elements as well hence using deleted elements map
         ...this.scene.getElementsIncludingDeleted().map((_element) => {
           if (_element.id === element.id && isTextElement(_element)) {
-            return newElementWith(_element, {
+            const updates = {
               originalText: nextOriginalText,
               isDeleted: isDeleted ?? _element.isDeleted,
               // returns (wrapped) text and new dimensions
@@ -6277,7 +6326,15 @@ class App extends React.Component<AppProps, AppState> {
                 elementsMap,
                 nextOriginalText,
               ),
-            });
+            };
+            if (_element.customData?.richText) {
+              return newElementWith(_element, {
+                ...updates,
+                customData:
+                  remapTextColorRanges(_element, nextOriginalText) || {},
+              });
+            }
+            return newElementWith(_element, updates);
           }
           return _element;
         }),
@@ -8800,6 +8857,8 @@ class App extends React.Component<AppProps, AppState> {
       );
     } else if (this.state.activeTool.type === "custom") {
       this.cursor.applyForTool();
+    } else if (this.state.activeTool.type === "matrix") {
+      return;
     } else if (
       this.state.activeTool.type === TOOL_TYPE.frame ||
       this.state.activeTool.type === TOOL_TYPE.magicframe

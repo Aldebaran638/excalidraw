@@ -53,6 +53,8 @@ import {
   getBoundTextMaxWidth,
 } from "./textElement";
 import { getLineHeightInPx } from "./textMeasurements";
+import { getTextColorRanges, getTextColorSegments } from "./textColor";
+import { getWrappedTextLines } from "./textWrapping";
 import {
   isTextElement,
   isLinearElement,
@@ -486,39 +488,72 @@ const drawElementOnCanvas = (
         context.canvas.setAttribute("dir", rtl ? "rtl" : "ltr");
         context.save();
         context.font = getFontString(element);
-        context.fillStyle = applyDarkModeFilter(
-          element.strokeColor,
-          renderConfig.theme === THEME.DARK,
-        );
-        context.textAlign = element.textAlign as CanvasTextAlign;
 
         // Canvas does not support multiline text by default
         const lines = element.text.replace(/\r\n?/g, "\n").split("\n");
-
-        const horizontalOffset =
-          element.textAlign === "center"
-            ? element.width / 2
-            : element.textAlign === "right"
-            ? element.width
-            : 0;
-
+        const ranges = getTextColorRanges(element);
+        const sourceLines = getWrappedTextLines(
+          element.originalText,
+          getFontString(element),
+          element.containerId || !element.autoResize ? element.width : Infinity,
+        );
         const lineHeightPx = getLineHeightInPx(
           element.fontSize,
           element.lineHeight,
         );
-
         const verticalOffset = getVerticalOffset(
           element.fontFamily,
           element.fontSize,
           lineHeightPx,
         );
 
+        let lineStart = 0;
         for (let index = 0; index < lines.length; index++) {
-          context.fillText(
-            lines[index],
-            horizontalOffset,
-            index * lineHeightPx + verticalOffset,
-          );
+          const line = lines[index];
+          lineStart = sourceLines[index]?.start ?? lineStart;
+          const baseline = index * lineHeightPx + verticalOffset;
+          const horizontalOffset =
+            element.textAlign === "center"
+              ? element.width / 2
+              : element.textAlign === "right"
+              ? element.width
+              : 0;
+
+          if (!ranges.length) {
+            context.fillStyle = applyDarkModeFilter(
+              element.strokeColor,
+              renderConfig.theme === THEME.DARK,
+            );
+            context.textAlign = element.textAlign as CanvasTextAlign;
+            context.fillText(line, horizontalOffset, baseline);
+          } else {
+            // Draw colored runs from left to right. The x offset is calculated
+            // from measured text, so alignment remains identical to the
+            // single-color renderer.
+            const lineWidth = context.measureText(line).width;
+            let x =
+              element.textAlign === "center"
+                ? element.width / 2 - lineWidth / 2
+                : element.textAlign === "right"
+                ? element.width - lineWidth
+                : 0;
+            context.textAlign = "left";
+
+            for (const segment of getTextColorSegments(
+              line,
+              lineStart,
+              ranges,
+              element.strokeColor,
+            )) {
+              context.fillStyle = applyDarkModeFilter(
+                segment.color,
+                renderConfig.theme === THEME.DARK,
+              );
+              context.fillText(segment.text, x, baseline);
+              x += context.measureText(segment.text).width;
+            }
+          }
+          lineStart += line.length + 1;
         }
         context.restore();
         if (shouldTemporarilyAttach) {

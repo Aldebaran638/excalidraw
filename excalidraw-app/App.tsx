@@ -149,7 +149,8 @@ import "./index.scss";
 import { ExcalidrawPlusPromoBanner } from "./components/ExcalidrawPlusPromoBanner";
 import { AppSidebar } from "./components/AppSidebar";
 import { RepositoryNotesDialog } from "./components/RepositoryNotesDialog";
-import { loadRepositoryNote, saveRepositoryNote } from "./data/repositoryNotes";
+import { RepositorySyncStatus } from "./components/RepositorySyncStatus";
+import { useRepositoryNoteSync } from "./hooks/useRepositoryNoteSync";
 
 import type { CollabAPI } from "./collab/Collab";
 
@@ -399,6 +400,11 @@ const ExcalidrawWrapper = () => {
 
   const debugCanvasRef = useRef<HTMLCanvasElement>(null);
   const appRootRef = useRef<HTMLDivElement>(null);
+  const [ownerWindow, setOwnerWindow] = useState<Window | null>(null);
+
+  useEffect(() => {
+    setOwnerWindow(appRootRef.current?.ownerDocument.defaultView || null);
+  }, []);
 
   useEffect(() => {
     trackEvent("load", "frame", getFrame());
@@ -455,49 +461,51 @@ const ExcalidrawWrapper = () => {
 
   const [, forceRefresh] = useState(false);
   const [repositoryDialog, setRepositoryDialog] = useState<
-    "save" | "open" | null
+    "save" | "saveAs" | "open" | null
   >(null);
-  const [repositoryNoteName, setRepositoryNoteName] = useState<string | null>(
-    null,
-  );
+  const {
+    flush: flushRepositorySync,
+    open: openRepositoryNote,
+    queueSceneSave: queueRepositorySceneSave,
+    repositoryNoteName,
+    saveAs: saveRepositoryNoteAs,
+    saveCurrent: saveCurrentRepositoryNote,
+    status: repositorySyncStatus,
+  } = useRepositoryNoteSync({ excalidrawAPI, ownerWindow });
+  const openMatrixTool = useCallback(() => {
+    excalidrawAPI?.setActiveTool({ type: "matrix" });
+  }, [excalidrawAPI]);
 
   const saveToRepository = useCallback(
     async (name: string) => {
       if (!name.trim() || !excalidrawAPI) {
         throw new Error("Enter a file name");
       }
-      const savedName = await saveRepositoryNote(
-        name,
-        excalidrawAPI.getSceneElementsIncludingDeleted(),
-        excalidrawAPI.getAppState(),
-        excalidrawAPI.getFiles(),
-      );
-      setRepositoryNoteName(savedName);
+      const savedName = await saveRepositoryNoteAs(name);
       excalidrawAPI.setToast({ message: `Saved ${savedName}`, duration: 1500 });
     },
-    [excalidrawAPI],
+    [excalidrawAPI, saveRepositoryNoteAs],
   );
+
+  const saveCurrentNoteToRepository = useCallback(async () => {
+    const savedName = await saveCurrentRepositoryNote();
+    if (savedName) {
+      excalidrawAPI?.setToast({
+        message: `Saved ${savedName}`,
+        duration: 1500,
+      });
+    }
+  }, [excalidrawAPI, saveCurrentRepositoryNote]);
 
   const openFromRepository = useCallback(
     async (name: string) => {
       if (!excalidrawAPI) {
         return;
       }
-      const data = await loadRepositoryNote(name);
-      excalidrawAPI.updateScene({
-        elements: restoreElements(data.elements, null, {
-          repairBindings: true,
-        }),
-        appState: restoreAppState(data.appState, excalidrawAPI.getAppState()),
-        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-      });
-      if (data.files) {
-        excalidrawAPI.addFiles(Object.values(data.files));
-      }
-      setRepositoryNoteName(name);
+      await openRepositoryNote(name);
       excalidrawAPI.setToast({ message: `Opened ${name}`, duration: 1500 });
     },
-    [excalidrawAPI],
+    [excalidrawAPI, openRepositoryNote],
   );
 
   useEffect(() => {
@@ -508,22 +516,24 @@ const ExcalidrawWrapper = () => {
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (
-        repositoryNoteName &&
         event.key.toLowerCase() === "s" &&
         (event.metaKey || event.ctrlKey) &&
-        !event.shiftKey &&
         !event.altKey
       ) {
         event.preventDefault();
         event.stopPropagation();
-        void saveToRepository(repositoryNoteName).catch((error: Error) => {
+        if (event.shiftKey) {
+          setRepositoryDialog("saveAs");
+          return;
+        }
+        void saveCurrentNoteToRepository().catch((error: Error) => {
           excalidrawAPI?.setToast({ message: error.message, duration: 3000 });
         });
       }
     };
     ownerWindow.addEventListener("keydown", onKeyDown, true);
     return () => ownerWindow.removeEventListener("keydown", onKeyDown, true);
-  }, [excalidrawAPI, repositoryNoteName, saveToRepository]);
+  }, [excalidrawAPI, saveCurrentNoteToRepository]);
 
   useEffect(() => {
     if (isDevEnv()) {
@@ -728,11 +738,13 @@ const ExcalidrawWrapper = () => {
 
     const onUnload = () => {
       LocalData.flushSave();
+      flushRepositorySync();
     };
 
     const visibilityChange = (event: FocusEvent | Event) => {
       if (event.type === EVENT.BLUR || document.hidden) {
         LocalData.flushSave();
+        flushRepositorySync();
       }
       if (
         event.type === EVENT.VISIBILITY_CHANGE ||
@@ -758,11 +770,19 @@ const ExcalidrawWrapper = () => {
         false,
       );
     };
-  }, [isCollabDisabled, collabAPI, excalidrawAPI, setLangCode, loadImages]);
+  }, [
+    isCollabDisabled,
+    collabAPI,
+    excalidrawAPI,
+    setLangCode,
+    loadImages,
+    flushRepositorySync,
+  ]);
 
   useEffect(() => {
     const unloadHandler = (event: BeforeUnloadEvent) => {
       LocalData.flushSave();
+      flushRepositorySync();
 
       if (
         excalidrawAPI &&
@@ -783,13 +803,15 @@ const ExcalidrawWrapper = () => {
     return () => {
       window.removeEventListener(EVENT.BEFORE_UNLOAD, unloadHandler);
     };
-  }, [excalidrawAPI]);
+  }, [excalidrawAPI, flushRepositorySync]);
 
   const onChange = (
     elements: readonly OrderedExcalidrawElement[],
     appState: AppState,
     files: BinaryFiles,
   ) => {
+    queueRepositorySceneSave(elements, appState, files);
+
     if (collabAPI?.isCollaborating()) {
       collabAPI.syncElements(elements);
     }
@@ -1067,26 +1089,37 @@ const ExcalidrawWrapper = () => {
         theme={editorTheme}
         onThemeChange={setAppTheme}
         renderTopRightUI={(isMobile) => {
-          if (isMobile || !collabAPI || isCollabDisabled) {
-            return null;
+          if (isMobile) {
+            return (
+              <div className="excalidraw-ui-top-right">
+                <RepositorySyncStatus status={repositorySyncStatus} />
+              </div>
+            );
           }
 
           return (
             <div className="excalidraw-ui-top-right">
-              {excalidrawAPI?.getEditorInterface().formFactor === "desktop" && (
-                <ExcalidrawPlusPromoBanner
-                  isSignedIn={isExcalidrawPlusSignedUser}
-                />
+              <RepositorySyncStatus status={repositorySyncStatus} />
+              {!collabAPI || isCollabDisabled ? null : (
+                <>
+                  {excalidrawAPI?.getEditorInterface().formFactor ===
+                    "desktop" && (
+                    <ExcalidrawPlusPromoBanner
+                      isSignedIn={isExcalidrawPlusSignedUser}
+                    />
+                  )}
+                  {collabError.message && (
+                    <CollabError collabError={collabError} />
+                  )}
+                  <LiveCollaborationTrigger
+                    isCollaborating={isCollaborating}
+                    onSelect={() =>
+                      setShareDialogState({ isOpen: true, type: "share" })
+                    }
+                    editorInterface={editorInterface}
+                  />
+                </>
               )}
-
-              {collabError.message && <CollabError collabError={collabError} />}
-              <LiveCollaborationTrigger
-                isCollaborating={isCollaborating}
-                onSelect={() =>
-                  setShareDialogState({ isOpen: true, type: "share" })
-                }
-                editorInterface={editorInterface}
-              />
             </div>
           );
         }}
@@ -1108,20 +1141,16 @@ const ExcalidrawWrapper = () => {
           theme={appTheme}
           refresh={() => forceRefresh((prev) => !prev)}
           onSaveRepository={() => {
-            if (repositoryNoteName) {
-              void saveToRepository(repositoryNoteName).catch(
-                (error: Error) => {
-                  excalidrawAPI?.setToast({
-                    message: error.message,
-                    duration: 3000,
-                  });
-                },
-              );
-            } else {
-              setRepositoryDialog("save");
-            }
+            void saveCurrentNoteToRepository().catch((error: Error) => {
+              excalidrawAPI?.setToast({
+                message: error.message,
+                duration: 3000,
+              });
+            });
           }}
+          onSaveRepositoryAs={() => setRepositoryDialog("saveAs")}
           onOpenRepository={() => setRepositoryDialog("open")}
+          onInsertMatrix={openMatrixTool}
         />
         {repositoryDialog && (
           <RepositoryNotesDialog

@@ -143,11 +143,11 @@ export class AppCursor {
           ? laserPointerCursorDataURL_lightMode
           : laserPointerCursorDataURL_darkMode;
       this.set(`url(${url}), auto`);
-    } else if (!["image", "custom"].includes(activeTool.type)) {
+    } else if (!["image", "matrix", "custom"].includes(activeTool.type)) {
       this.set(CURSOR_TYPE.CROSSHAIR);
       // do nothing if image tool is selected which suggests there's
       // an image-preview set as the cursor
-      // Ignore custom type as well and let host decide
+      // Matrix opens a dialog and custom tools are host-controlled.
     } else if (activeTool.type !== "image") {
       this.set(CURSOR_TYPE.AUTO);
     }

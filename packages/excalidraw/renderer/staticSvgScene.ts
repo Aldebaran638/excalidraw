@@ -5,6 +5,7 @@ import {
   THEME,
   DARK_THEME_FILTER,
   getFontFamilyString,
+  getFontString,
   isRTL,
   isTestEnv,
   getVerticalOffset,
@@ -21,6 +22,8 @@ import {
 import { LinearElementEditor } from "@excalidraw/element";
 import { getBoundTextElement, getContainerElement } from "@excalidraw/element";
 import { getLineHeightInPx } from "@excalidraw/element";
+import { getTextColorRanges, getTextColorSegments } from "@excalidraw/element";
+import { getWrappedTextLines } from "@excalidraw/element";
 import {
   isArrowElement,
   isIframeLikeElement,
@@ -677,20 +680,53 @@ const renderElementToSvg = (
             : element.textAlign === "right" || direction === "rtl"
             ? "end"
             : "start";
+        const ranges = getTextColorRanges(element);
+        const sourceLines = getWrappedTextLines(
+          element.originalText,
+          getFontString(element),
+          element.containerId || !element.autoResize ? element.width : Infinity,
+        );
         for (let i = 0; i < lines.length; i++) {
           const text = svgRoot.ownerDocument.createElementNS(SVG_NS, "text");
-          text.textContent = lines[i];
+          const line = lines[i];
+          const sourceLineStart = sourceLines[i]?.start ?? 0;
+          if (!ranges.length) {
+            text.textContent = line;
+          } else {
+            for (const segment of getTextColorSegments(
+              line,
+              sourceLineStart,
+              ranges,
+              element.strokeColor,
+            )) {
+              const tspan = svgRoot.ownerDocument.createElementNS(
+                SVG_NS,
+                "tspan",
+              );
+              tspan.textContent = segment.text;
+              tspan.setAttribute(
+                "fill",
+                applyDarkModeFilter(
+                  segment.color,
+                  renderConfig.theme === THEME.DARK,
+                ),
+              );
+              text.appendChild(tspan);
+            }
+          }
           text.setAttribute("x", `${horizontalOffset}`);
           text.setAttribute("y", `${i * lineHeightPx + verticalOffset}`);
           text.setAttribute("font-family", getFontFamilyString(element));
           text.setAttribute("font-size", `${element.fontSize}px`);
-          text.setAttribute(
-            "fill",
-            applyDarkModeFilter(
-              element.strokeColor,
-              renderConfig.theme === THEME.DARK,
-            ),
-          );
+          if (!ranges.length) {
+            text.setAttribute(
+              "fill",
+              applyDarkModeFilter(
+                element.strokeColor,
+                renderConfig.theme === THEME.DARK,
+              ),
+            );
+          }
           text.setAttribute("text-anchor", textAnchor);
           text.setAttribute("style", "white-space: pre;");
           text.setAttribute("direction", direction);

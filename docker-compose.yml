@@ -2,22 +2,40 @@ services:
   excalidraw:
     build:
       context: .
-      args:
-        - NODE_ENV=development
+      target: development
     container_name: excalidraw
+    init: true
     ports:
-      - "3000:80"
-    restart: on-failure
+      - "3001:3001"
+    restart: unless-stopped
     stdin_open: true
+    tty: true
     healthcheck:
-      disable: true
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/api/notes').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
     environment:
-      - NODE_ENV=development
+      NODE_ENV: development
+      CHOKIDAR_USEPOLLING: "true"
     volumes:
-      - ./:/opt/node_app/app:delegated
-      - ./package.json:/opt/node_app/package.json
-      - ./yarn.lock:/opt/node_app/yarn.lock
-      - notused:/opt/node_app/app/node_modules
+      - ./:/opt/node_app
+      - node_modules:/opt/node_app/node_modules
+      - app_node_modules:/opt/node_app/excalidraw-app/node_modules
+    develop:
+      watch:
+        - action: rebuild
+          path: package.json
+        - action: rebuild
+          path: yarn.lock
 
 volumes:
-  notused:
+  node_modules:
+  app_node_modules:
