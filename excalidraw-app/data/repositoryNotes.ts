@@ -4,8 +4,6 @@ import { serializeAsJSON } from "@excalidraw/excalidraw/data/json";
 import type { AppState, BinaryFiles } from "@excalidraw/excalidraw/types";
 import type { OrderedExcalidrawElement } from "@excalidraw/element/types";
 
-export const REPOSITORY_NOTE_HMR_EVENT = "repository-notes:changed";
-
 export type RepositoryNoteChange = Readonly<{
   name: string;
   kind: "updated" | "deleted";
@@ -29,12 +27,27 @@ export const serializeRepositoryNote = (
 
 export const subscribeToRepositoryNoteChanges = (
   listener: (change: RepositoryNoteChange) => void,
+  ownerWindow: Window,
+  onReconnect?: () => void,
 ) => {
-  if (!import.meta.hot) {
-    return () => {};
-  }
-  import.meta.hot.on(REPOSITORY_NOTE_HMR_EVENT, listener);
-  return () => import.meta.hot?.off(REPOSITORY_NOTE_HMR_EVENT, listener);
+  const source = new (ownerWindow as Window & typeof globalThis).EventSource(
+    "/api/notes/events",
+  );
+  source.addEventListener("ready", () => onReconnect?.());
+  source.onmessage = (event) => {
+    try {
+      const change = JSON.parse(event.data) as RepositoryNoteChange;
+      if (
+        typeof change.name === "string" &&
+        ["updated", "deleted"].includes(change.kind)
+      ) {
+        listener(change);
+      }
+    } catch {
+      /* Ignore malformed events; reconnect checks the revision. */
+    }
+  };
+  return () => source.close();
 };
 
 export const normalizeRepositoryNoteName = (name: string) => {

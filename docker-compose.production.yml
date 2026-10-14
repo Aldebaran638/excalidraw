@@ -1,0 +1,32 @@
+services:
+  excalidraw:
+    build:
+      context: .
+      target: production
+      args:
+        NODE_BUILD_IMAGE: ${NODE_BUILD_IMAGE:-node:24@sha256:8530f76a96d88820d288761f022e318970dda93d01536919fbc16076b7983e63}
+        NODE_RUNTIME_IMAGE: ${NODE_RUNTIME_IMAGE:-node:24-alpine}
+    init: true
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      REPOSITORY_NOTES_DIR: /opt/node_app/notes
+      QWEN_BASE_URL: ${QWEN_BASE_URL:-http://172.31.69.234:8006/v1}
+      QWEN_MODEL: ${QWEN_MODEL:-qwen3.8-27b}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+    volumes:
+      - ./notes:/opt/node_app/notes
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5

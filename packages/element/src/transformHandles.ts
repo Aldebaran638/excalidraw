@@ -314,6 +314,9 @@ export const getTransformHandles = (
     : isImageElement(element)
     ? 0
     : DEFAULT_TRANSFORM_HANDLE_SPACING;
+  if (element.customData?.embeddable?.contentLocked) {
+    omitSides = { ...omitSides, rotation: true };
+  }
   return getTransformHandlesFromCoords(
     getElementAbsoluteCoords(element, elementsMap, true),
     element.angle,

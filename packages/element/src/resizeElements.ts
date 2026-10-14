@@ -207,6 +207,9 @@ const rotateSingleElement = (
   pointerY: number,
   shouldRotateWithDiscreteAngle: boolean,
 ) => {
+  if (element.customData?.embeddable?.contentLocked) {
+    return;
+  }
   const [x1, y1, x2, y2] = getElementAbsoluteCoords(
     element,
     scene.getNonDeletedElementsMap(),
@@ -411,6 +414,9 @@ const rotateMultipleElements = (
   centerX: number,
   centerY: number,
 ) => {
+  if (elements.some((el) => el.customData?.embeddable?.contentLocked)) {
+    return;
+  }
   const elementsMap = scene.getNonDeletedElementsMap();
   let centerAngle =
     (5 * Math.PI) / 2 + Math.atan2(pointerY - centerY, pointerX - centerX);

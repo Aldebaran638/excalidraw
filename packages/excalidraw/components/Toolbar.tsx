@@ -177,6 +177,21 @@ const ExtraToolsDropdown = ({
         <div style={{ margin: "6px 0", fontSize: 14, fontWeight: 600 }}>
           Generate
         </div>
+        {app.props.customTools?.map((tool) => (
+          <DropdownMenu.Item
+            key={tool.name}
+            onSelect={() =>
+              app.setActiveTool({ type: "custom", customType: tool.name })
+            }
+            icon={tool.icon || MagicIcon}
+            selected={
+              activeTool.type === "custom" &&
+              activeTool.customType === tool.name
+            }
+          >
+            {tool.label}
+          </DropdownMenu.Item>
+        ))}
         {app.props.aiEnabled !== false && <TTDDialogTriggerTunnel.Out />}
         <DropdownMenu.Item
           onSelect={() => app.setOpenDialog({ name: "ttd", tab: "mermaid" })}

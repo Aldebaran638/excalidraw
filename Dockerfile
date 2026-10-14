@@ -1,4 +1,6 @@
-FROM --platform=${BUILDPLATFORM} node:24@sha256:8530f76a96d88820d288761f022e318970dda93d01536919fbc16076b7983e63 AS dependencies
+ARG NODE_BUILD_IMAGE=node:24@sha256:8530f76a96d88820d288761f022e318970dda93d01536919fbc16076b7983e63
+ARG NODE_RUNTIME_IMAGE=node:24-alpine
+FROM --platform=${BUILDPLATFORM} ${NODE_BUILD_IMAGE} AS dependencies
 
 WORKDIR /opt/node_app
 
@@ -23,10 +25,15 @@ FROM dependencies AS build
 
 ARG NODE_ENV=production
 
-RUN npm_config_target_arch=${TARGETARCH} yarn build:app:docker
+RUN npm_config_target_arch=${TARGETARCH} yarn build:production
 
-FROM nginx:stable-alpine-slim@sha256:2c605dbeab79a6b2a63340474fe58119d0ef95bdc4b1f41df0aa689659b3d13b
+FROM ${NODE_RUNTIME_IMAGE} AS production
 
-COPY --from=build /opt/node_app/excalidraw-app/build /usr/share/nginx/html
+WORKDIR /opt/node_app
+ENV NODE_ENV=production
+COPY --from=build /opt/node_app/excalidraw-app/build ./excalidraw-app/build
+COPY --from=build /opt/node_app/excalidraw-app/server-dist ./excalidraw-app/server-dist
+EXPOSE 3001
+CMD ["node", "excalidraw-app/server-dist/main.mjs"]
 
-HEALTHCHECK CMD wget -q -O /dev/null http://localhost || exit 1
+HEALTHCHECK CMD node -e "fetch('http://127.0.0.1:3001/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"

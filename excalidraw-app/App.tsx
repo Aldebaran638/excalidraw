@@ -79,6 +79,8 @@ import type {
 import type { ResolutionType } from "@excalidraw/common/utility-types";
 import type { ResolvablePromise } from "@excalidraw/common/utils";
 
+import { WIDGET_LINK_PREFIX } from "../packages/interactive-widgets/types";
+
 import CustomStats from "./CustomStats";
 import {
   Provider,
@@ -151,6 +153,8 @@ import { AppSidebar } from "./components/AppSidebar";
 import { RepositoryNotesDialog } from "./components/RepositoryNotesDialog";
 import { RepositorySyncStatus } from "./components/RepositorySyncStatus";
 import { useRepositoryNoteSync } from "./hooks/useRepositoryNoteSync";
+import { useAIWidgets, isWidgetElement } from "./hooks/useAIWidgets";
+import { AIWidgetPanel } from "./components/AIWidgetPanel";
 
 import type { CollabAPI } from "./collab/Collab";
 
@@ -463,6 +467,7 @@ const ExcalidrawWrapper = () => {
   const [repositoryDialog, setRepositoryDialog] = useState<
     "save" | "saveAs" | "open" | null
   >(null);
+  const transientEdits = useRef<() => boolean>(() => false);
   const {
     flush: flushRepositorySync,
     open: openRepositoryNote,
@@ -471,7 +476,19 @@ const ExcalidrawWrapper = () => {
     saveAs: saveRepositoryNoteAs,
     saveCurrent: saveCurrentRepositoryNote,
     status: repositorySyncStatus,
-  } = useRepositoryNoteSync({ excalidrawAPI, ownerWindow });
+    externalUpdate,
+    resolveExternalUpdate,
+  } = useRepositoryNoteSync({
+    excalidrawAPI,
+    ownerWindow,
+    hasTransientEdits: () => transientEdits.current(),
+  });
+  const widgets = useAIWidgets({
+    api: excalidrawAPI,
+    ownerWindow,
+    noteName: repositoryNoteName,
+  });
+  transientEdits.current = widgets.hasTransientEdits;
   const openMatrixTool = useCallback(() => {
     excalidrawAPI?.setActiveTool({ type: "matrix" });
   }, [excalidrawAPI]);
@@ -1036,7 +1053,7 @@ const ExcalidrawWrapper = () => {
   return (
     <div
       ref={appRootRef}
-      style={{ height: "100%" }}
+      style={{ height: "100%", position: "relative" }}
       className={clsx("excalidraw-app", {
         "is-collaborating": isCollaborating,
       })}
@@ -1045,6 +1062,16 @@ const ExcalidrawWrapper = () => {
         viewportStatusFrame={viewportStatusFrame}
         userToFollow={userToFollow}
         onChange={onChange}
+        customTools={[{ name: "ai-widget", label: "AI 组件" }]}
+        renderEmbeddable={widgets.renderEmbeddable}
+        validateEmbeddable={(link) =>
+          link.startsWith(WIDGET_LINK_PREFIX) &&
+          excalidrawAPI
+            ?.getSceneElements()
+            .some((el) => el.link === link && isWidgetElement(el))
+            ? true
+            : undefined
+        }
         onExport={onExport}
         initialData={initialStatePromiseRef.current.promise}
         isCollaborating={isCollaborating}
@@ -1228,6 +1255,11 @@ const ExcalidrawWrapper = () => {
         />
 
         <AppSidebar />
+        <AIWidgetPanel
+          widgets={widgets}
+          conflict={externalUpdate?.name || null}
+          resolveConflict={resolveExternalUpdate}
+        />
 
         {errorMessage && (
           <ErrorDialog onClose={() => setErrorMessage("")}>

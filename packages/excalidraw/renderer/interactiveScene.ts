@@ -2001,7 +2001,10 @@ const _renderInteractiveScene = ({
         0 as Radians,
         appState.zoom,
         "mouse",
-        isFrameSelected
+        isFrameSelected ||
+          selectedElements.some(
+            (el) => el.customData?.embeddable?.contentLocked,
+          )
           ? {
               ...getOmitSidesForEditorInterface(editorInterface),
               rotation: true,

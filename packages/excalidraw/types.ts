@@ -970,6 +970,8 @@ export interface ExcalidrawProps {
     element: NonDeleted<ExcalidrawEmbeddableElement>,
     appState: AppState,
   ) => JSX.Element | null;
+  /** Host tools displayed alongside native tools; behavior uses custom-tool pointer events. */
+  customTools?: readonly { name: string; label: string; icon?: JSX.Element }[];
   aiEnabled?: boolean;
   showDeprecatedFonts?: boolean;
   renderScrollbars?: boolean;

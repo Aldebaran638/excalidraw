@@ -16,4 +16,5 @@
 # e.g. ./packages/excalidraw/{dist,node_modules}
 **/build
 **/dist
+**/server-dist
 **/node_modules

@@ -1616,6 +1616,10 @@ class App extends React.Component<AppProps, AppState> {
       return false;
     }
 
+    if (hitElement?.customData?.embeddable?.interaction === "doubleClick") {
+      return false;
+    }
+
     const iframeLikeElement = hitElement;
 
     if (
@@ -3079,7 +3083,31 @@ class App extends React.Component<AppProps, AppState> {
 
     let editingTextElement: AppState["editingTextElement"] | null = null;
     if (actionResult.elements) {
-      this.scene.replaceAllElements(actionResult.elements);
+      const previous = this.scene.getElementsMapIncludingDeleted();
+      this.scene.replaceAllElements(
+        actionResult.elements.map((element) => {
+          const old = previous.get(element.id);
+          if (
+            old?.customData?.embeddable?.contentLocked &&
+            element.type === "embeddable"
+          ) {
+            return {
+              ...element,
+              link: old.link,
+              angle: old.angle,
+              strokeColor: old.strokeColor,
+              backgroundColor: old.backgroundColor,
+              fillStyle: old.fillStyle,
+              strokeWidth: old.strokeWidth,
+              strokeStyle: old.strokeStyle,
+              roughness: old.roughness,
+              roundness: old.roundness,
+              opacity: old.opacity,
+            };
+          }
+          return element;
+        }),
+      );
       didUpdate = true;
     }
 
@@ -7344,6 +7372,7 @@ class App extends React.Component<AppProps, AppState> {
       }
       if (
         element.link &&
+        !element.customData?.embeddable?.contentLocked &&
         index >= hitElementIndex &&
         isPointHittingLink(
           element,

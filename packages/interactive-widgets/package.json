@@ -1,0 +1,13 @@
+{
+  "name": "@excalidraw/interactive-widgets",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ajv": "6.12.6",
+    "katex": "^0.16.22"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}

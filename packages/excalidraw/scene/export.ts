@@ -50,6 +50,7 @@ import type {
 } from "@excalidraw/element/types";
 
 import { getDefaultAppState } from "../appState";
+
 import { base64ToString, decode, encode, stringToBase64 } from "../data/encode";
 import { serializeAsJSON } from "../data/json";
 
@@ -57,6 +58,8 @@ import { Fonts } from "../fonts";
 
 import { renderStaticScene } from "../renderer/staticScene";
 import { renderSceneToSvg } from "../renderer/staticSvgScene";
+
+import { prepareEmbeddableSnapshots } from "./embeddableSnapshots";
 
 import type { RenderableElementsMap } from "./types";
 
@@ -207,6 +210,9 @@ export const exportToCanvas = async (
 ) => {
   // load font faces before continuing, by default leverages browsers' [FontFace API](https://developer.mozilla.org/en-US/docs/Web/API/FontFace)
   await loadFonts();
+  const preparedSnapshots = prepareEmbeddableSnapshots(elements, files);
+  elements = preparedSnapshots.elements;
+  files = preparedSnapshots.files;
 
   const frameRendering = getFrameRenderingConfig(
     exportingFrame ?? null,
@@ -312,6 +318,11 @@ export const exportToSvg = async (
     reuseImages?: boolean;
   },
 ): Promise<SVGSVGElement> => {
+  const originalElements = elements;
+  const originalFiles = files;
+  const preparedSnapshots = prepareEmbeddableSnapshots(elements, files || {});
+  elements = preparedSnapshots.elements;
+  files = preparedSnapshots.files;
   const frameRendering = getFrameRenderingConfig(
     opts?.exportingFrame ?? null,
     appState.frameRendering ?? null,
@@ -383,7 +394,12 @@ export const exportToSvg = async (
         // elements which don't contain the temp frame labels.
         // But it also requires that the exportToSvg is being supplied with
         // only the elements that we're exporting, and no extra.
-        payload: serializeAsJSON(elements, appState, files || {}, "local"),
+        payload: serializeAsJSON(
+          originalElements,
+          appState,
+          originalFiles || {},
+          "local",
+        ),
       });
     } catch (error: any) {
       console.error(error);

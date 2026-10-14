@@ -28,6 +28,10 @@ const contentForStatus = (status: SyncStatus) => {
       return { icon: RetryIcon, label: t("repositorySync.missing") };
     case "error":
       return { icon: RetryIcon, label: t("repositorySync.error") };
+    case "conflict":
+      return { icon: RetryIcon, label: "本地文件有更新，请处理冲突" };
+    case "unavailable":
+      return { icon: RetryIcon, label: "本地笔记服务不可用" };
     case "unbound":
       return { icon: save, label: t("repositorySync.unbound") };
   }

@@ -152,8 +152,18 @@ export const SelectedShapeActions = ({
     app,
   );
 
-  // the bucket fill tool configures only the fill it creates: color, fill
-  // style, and opacity (shared `currentItem*` values; no stroke properties)
+  if (targetElements.some((el) => el.customData?.embeddable?.contentLocked)) {
+    return (
+      <div className="selected-shape-actions">
+        <LayersFieldset renderAction={renderAction} />
+        <div>
+          {renderAction("duplicateSelection")}
+          {renderAction("deleteSelectedElements")}
+        </div>
+      </div>
+    );
+  }
+  // The bucket fill tool configures only its fill: color, fill style, opacity.
   if (appState.activeTool.type === "bucketfill") {
     return (
       <div className="selected-shape-actions">
@@ -630,6 +640,15 @@ export const CompactShapeActions = ({
     app,
   );
   const { container } = useExcalidrawContainer();
+
+  if (targetElements.some((el) => el.customData?.embeddable?.contentLocked)) {
+    return (
+      <div className="compact-shape-actions">
+        {renderAction("duplicateSelection")}
+        {renderAction("deleteSelectedElements")}
+      </div>
+    );
+  }
 
   return (
     <div className="compact-shape-actions">

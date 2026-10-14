@@ -22,6 +22,13 @@ export const actionLink = register({
     getContextMenuLabel(getNonDeletedElements(elements), appState),
   icon: LinkIcon,
   perform: (elements, appState) => {
+    if (
+      getSelectedElements(elements, appState).some(
+        (el) => el.customData?.embeddable?.contentLocked,
+      )
+    ) {
+      return false;
+    }
     if (appState.showHyperlinkPopup === "editor") {
       return false;
     }
@@ -40,7 +47,10 @@ export const actionLink = register({
   keyTest: (event) => event[KEYS.CTRL_OR_CMD] && event.key === KEYS.K,
   predicate: (elements, appState) => {
     const selectedElements = getSelectedElements(elements, appState);
-    return selectedElements.length === 1;
+    return (
+      selectedElements.length === 1 &&
+      !selectedElements[0].customData?.embeddable?.contentLocked
+    );
   },
   PanelComponent: ({ elements, appState, updateData }) => {
     const selectedElements = getSelectedElements(elements, appState);
