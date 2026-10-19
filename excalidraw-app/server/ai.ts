@@ -8,7 +8,13 @@ import {
   widgetSchema,
 } from "../../packages/interactive-widgets/schema";
 import { computeWidget } from "../../packages/interactive-widgets/compute";
+import { layoutWidget } from "../../packages/interactive-widgets/layout";
 import { EXAMPLES } from "../../packages/interactive-widgets/examples";
+import {
+  ARCHITECTURE,
+  WORKFLOW,
+  SCENARIO,
+} from "../../packages/interactive-widgets/designExamples";
 
 import { readBody, sendJson } from "./notes";
 
@@ -70,7 +76,17 @@ export const createAIHandler = (
         !body.prompt.trim() ||
         body.prompt.length > 12000 ||
         (body.context !== undefined &&
-          (!Array.isArray(body.context) || body.context.length > 50))
+          (!Array.isArray(body.context) || body.context.length > 50)) ||
+        (body.initialIntent !== undefined &&
+          (typeof body.initialIntent !== "string" ||
+            body.initialIntent.length > 12000)) ||
+        (body.region !== undefined &&
+          (!Number.isFinite(body.region?.width) ||
+            !Number.isFinite(body.region?.height) ||
+            body.region.width <= 0 ||
+            body.region.height <= 0 ||
+            body.region.width > 20000 ||
+            body.region.height > 20000))
       ) {
         sendJson(res, 400, { error: "请输入要求，或减少上下文" });
         return true;
@@ -84,7 +100,9 @@ export const createAIHandler = (
           role: "system",
           content: [
             "You design interactive widgets by composing an existing component library. Return ONLY a complete JSON WidgetDefinition, no markdown. Never emit JS, HTML, CSS strings or external URLs.",
-            "Use version:1, title, datasets (read-only JSON dictionaries/lists), initialState (editable state), computations (expression DAG), root (node tree). Every node has a unique id and type.",
+            "Use version:2, title, datasets (read-only JSON dictionaries/lists), initialState (editable state), computations (expression DAG), root (node tree). Every node has a unique id and type.",
+            "Architecture uses diagram nodes: children are explicit pressable/card nodes or group containers; direction LR/TB; relations:[{id,from,to,label,directed:true}]. Endpoints reference explicit leaf node IDs, never group or nested content IDs. Graph cycles are allowed; max 60 nodes and 100 relations. Use selected bindings and dictionary lookup explanations for linked learning. Do not force calculators or data tools into card grids.",
+            "Respect the provided region size, use readable text and responsive layout; never shrink text to fit. Return only the latest revised design, using currentDefinition/currentState as the base and initialIntent as context.",
             "Expressions are exactly {literal:JSONValue}, {ref:'variable.or.item.field'}, {op:'operation',args:[expressions]}. Bindings support text,visible,disabled,selected,background,color,borderColor.",
             "Actions: {type:'set',target:'stateKey',value:expression}, toggle/reset/step, or {type:'batch',actions:[actions]}. Pressable containers may have children. No onClick or function code.",
             "Repeat: {id,type:'repeat',items:expression,itemKey:'id',children:[template]}; item/index available inside. Primitive lists may omit itemKey. Use stable keys, not indices.",
@@ -96,10 +114,14 @@ export const createAIHandler = (
             `Operations: ${OPERATIONS.join(",")}`,
             `Example: ${JSON.stringify(
               /矩阵|attention|softmax/i.test(body.prompt)
-                ? EXAMPLES.attention
+                ? { ...EXAMPLES.attention, version: 2 }
                 : /kubernetes|k8s|架构|卡片/i.test(body.prompt)
-                ? EXAMPLES.kubernetes
-                : EXAMPLES.calculator,
+                ? ARCHITECTURE
+                : /流程|flow/i.test(body.prompt)
+                ? WORKFLOW
+                : /场景|分段|多行|scenario/i.test(body.prompt)
+                ? SCENARIO
+                : { ...EXAMPLES.calculator, version: 2 },
             )}`,
           ].join("\n"),
         },
@@ -110,6 +132,8 @@ export const createAIHandler = (
             context: body.context || [],
             currentDefinition: body.currentDefinition,
             currentState: body.currentState,
+            region: body.region,
+            initialIntent: body.initialIntent,
           }),
         },
       ];
@@ -156,6 +180,7 @@ export const createAIHandler = (
           if (Object.keys(computed.errors).length) {
             throw new Error(Object.values(computed.errors).join("; "));
           }
+          layoutWidget(computed.tree, body.region?.width || 700);
           sendJson(res, 200, {
             definition,
             explanation: body.currentDefinition

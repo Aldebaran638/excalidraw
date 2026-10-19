@@ -3,6 +3,11 @@ import throttle from "lodash.throttle";
 import React, { useContext } from "react";
 import { flushSync } from "react-dom";
 import rough from "roughjs/bin/rough";
+import {
+  controlsAncestor,
+  embeddedControlsCanScroll,
+  observeEmbeddedPinch,
+} from "../embeddableControls";
 import { nanoid } from "nanoid";
 
 import {
@@ -525,6 +530,7 @@ const editorLifecycleEventBehavior = {
   "editor:mount": { cardinality: "once", replay: "last" },
   "editor:initialize": { cardinality: "once", replay: "last" },
   "editor:unmount": { cardinality: "once", replay: "last" },
+  "document:replace": { cardinality: "many", replay: "none" },
 } as const;
 
 export const ExcalidrawContainerContext = React.createContext<{
@@ -1960,6 +1966,18 @@ class App extends React.Component<AppProps, AppState> {
               className={clsx("excalidraw__embeddable-container", {
                 "is-hovered": isHovered,
               })}
+              data-embeddable-interaction={
+                el.customData?.embeddable?.interaction === "controls"
+                  ? "controls"
+                  : undefined
+              }
+              data-embeddable-controls-enabled={
+                this.isEmbedsEnabled() &&
+                this.state.activeTool.type === "selection" &&
+                !isHoldingSpace &&
+                !isPanning &&
+                gesture.pointers.size < 2
+              }
               style={{
                 transform: isVisible
                   ? `translate(${x - this.state.offsetLeft}px, ${
@@ -2004,20 +2022,26 @@ class App extends React.Component<AppProps, AppState> {
                   width: isVisible ? `${el.width}px` : 0,
                   height: isVisible ? `${el.height}px` : 0,
                   transform: isVisible ? `rotate(${el.angle}rad)` : "none",
-                  pointerEvents: isActive
-                    ? POINTER_EVENTS.enabled
-                    : POINTER_EVENTS.disabled,
+                  pointerEvents:
+                    isActive &&
+                    el.customData?.embeddable?.interaction !== "controls"
+                      ? POINTER_EVENTS.enabled
+                      : POINTER_EVENTS.disabled,
                 }}
               >
-                {isHovered && (
-                  <div className="excalidraw__embeddable-hint">
-                    {t("buttons.embeddableInteractionButton")}
-                  </div>
-                )}
+                {isHovered &&
+                  el.customData?.embeddable?.interaction !== "controls" && (
+                    <div className="excalidraw__embeddable-hint">
+                      {t("buttons.embeddableInteractionButton")}
+                    </div>
+                  )}
                 <div
                   className="excalidraw__embeddable__outer"
                   style={{
-                    padding: `${el.strokeWidth}px`,
+                    padding:
+                      el.customData?.embeddable?.interaction === "controls"
+                        ? 0
+                        : `${el.strokeWidth}px`,
                   }}
                 >
                   <div
@@ -2392,6 +2416,9 @@ class App extends React.Component<AppProps, AppState> {
           ["--right-sidebar-width" as any]: `${RIGHT_SIDEBAR_WIDTH}px`,
         }}
         ref={this.excalidrawContainerRef}
+        data-embeddable-controls-enabled={
+          this.isEmbedsEnabled() && this.state.activeTool.type === "selection"
+        }
         onDrop={this.isInteractionEnabled() ? this.handleAppOnDrop : undefined}
         tabIndex={0}
         onKeyDown={
@@ -3076,7 +3103,12 @@ class App extends React.Component<AppProps, AppState> {
     if (this.unmounted || actionResult === false) {
       return;
     }
-
+    if (
+      actionResult &&
+      (actionResult.documentChanged || actionResult.replaceFiles)
+    ) {
+      this.editorLifecycleEvents.emit("document:replace");
+    }
     this.store.scheduleAction(actionResult.captureUpdate);
 
     let didUpdate = false;
@@ -3187,6 +3219,9 @@ class App extends React.Component<AppProps, AppState> {
 
   private onBlur = withBatchedUpdates(() => {
     isHoldingSpace = false;
+    this.excalidrawContainerRef.current?.removeAttribute(
+      "data-embeddable-space",
+    );
     this.setState({
       isBindingEnabled: this.state.bindingPreference === "enabled",
     });
@@ -3274,6 +3309,9 @@ class App extends React.Component<AppProps, AppState> {
 
     isHoldingSpace = false;
     isPanning = false;
+    this.excalidrawContainerRef.current?.removeAttribute(
+      "data-embeddable-space",
+    );
     isDraggingScrollBar = false;
     lastPointerUp = null;
 
@@ -3516,6 +3554,7 @@ class App extends React.Component<AppProps, AppState> {
    */
   private resetScene = withBatchedUpdates(
     (opts?: { resetLoadingState: boolean }) => {
+      this.editorLifecycleEvents.emit("document:replace");
       this.scene.replaceAllElements([]);
       this.setState((state) => ({
         ...getDefaultAppState(),
@@ -3812,6 +3851,28 @@ class App extends React.Component<AppProps, AppState> {
 
     this.scene.onUpdate(this.triggerRender);
     this.addEventListeners();
+    if (this.excalidrawContainerRef.current) {
+      this.onRemoveEventListenersEmitter.once(
+        observeEmbeddedPinch(
+          this.excalidrawContainerRef.current,
+          () => this.isNavigationEnabled(),
+          (ratio, previous, current) => {
+            this.viewport.translate((state) => {
+              const nextZoom = getNormalizedZoom(state.zoom.value * ratio);
+              const zoomed = getViewportForZoomWithScrollConstraints(
+                { viewportX: previous.x, viewportY: previous.y, nextZoom },
+                state,
+              );
+              return {
+                ...zoomed,
+                scrollX: zoomed.scrollX + (current.x - previous.x) / nextZoom,
+                scrollY: zoomed.scrollY + (current.y - previous.y) / nextZoom,
+              };
+            });
+          },
+        ),
+      );
+    }
 
     if (this.props.autoFocus && this.excalidrawContainerRef.current) {
       this.focusContainer();
@@ -5843,6 +5904,10 @@ class App extends React.Component<AppProps, AppState> {
 
       if (event.key === KEYS.SPACE && gesture.pointers.size === 0) {
         isHoldingSpace = true;
+        this.excalidrawContainerRef.current?.setAttribute(
+          "data-embeddable-space",
+          "true",
+        );
         this.cursor.set(CURSOR_TYPE.GRAB);
         event.preventDefault();
       }
@@ -5951,6 +6016,9 @@ class App extends React.Component<AppProps, AppState> {
         });
       }
       isHoldingSpace = false;
+      this.excalidrawContainerRef.current?.removeAttribute(
+        "data-embeddable-space",
+      );
     }
 
     if (event.key === KEYS.ALT) {
@@ -13832,8 +13900,18 @@ class App extends React.Component<AppProps, AppState> {
       if (!this.isNavigationEnabled()) {
         return;
       }
+      const controls = controlsAncestor(event.target, this.ownerWindow);
+      if (
+        controls &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        embeddedControlsCanScroll(event, controls, this.ownerWindow)
+      ) {
+        return;
+      }
       if (
         !(
+          controls ||
           event.target instanceof this.ownerWindow.HTMLCanvasElement ||
           event.target instanceof this.ownerWindow.HTMLTextAreaElement ||
           event.target instanceof this.ownerWindow.HTMLIFrameElement ||

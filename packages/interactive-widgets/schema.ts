@@ -30,7 +30,7 @@ export const widgetSchema = {
   additionalProperties: false,
   required: ["version", "title", "root", "initialState", "computations"],
   properties: {
-    version: { const: 1 },
+    version: { enum: [1, 2] },
     title: { type: "string", maxLength: 200 },
     root: ref("node"),
     datasets: {
@@ -124,6 +124,23 @@ export const widgetSchema = {
         icon: { enum: Object.keys(ICONS) },
         items: expression,
         itemKey: { type: "string" },
+        direction: { enum: ["LR", "TB"] },
+        relations: {
+          type: "array",
+          maxItems: 100,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "from", "to"],
+            properties: {
+              id: { type: "string", pattern: "^[a-zA-Z][a-zA-Z0-9_-]{0,79}$" },
+              from: { type: "string" },
+              to: { type: "string" },
+              label: { type: "string", maxLength: 100 },
+              directed: { type: "boolean" },
+            },
+          },
+        },
         bindings: {
           type: "object",
           additionalProperties: false,
@@ -349,6 +366,44 @@ export const validateDefinition = (input: unknown): WidgetDefinition => {
     }
   };
   const visitNode = (node: WidgetNode, local: boolean) => {
+    if (node.type === "diagram") {
+      const descendants = (node.children || []).flatMap(walkNodes);
+      const endpoints = descendants.filter(
+        (n) =>
+          n.type === "group" || n.type === "pressable" || n.type === "card",
+      );
+      if (endpoints.length > 60) {
+        throw new Error("单图最多 60 个节点");
+      }
+      const explicit: WidgetNode[] = [];
+      const collect = (children: WidgetNode[]) =>
+        children.forEach((child) => {
+          if (child.type === "group") {
+            collect(child.children || []);
+          } else if (["card", "pressable"].includes(child.type)) {
+            explicit.push(child);
+          } else {
+            throw new Error(
+              "图节点必须为 Card、Pressable 或 Group，不能使用重复模板",
+            );
+          }
+        });
+      collect(node.children || []);
+      const ids = new Set(explicit.map((n) => n.id));
+      const relations = new Set<string>();
+      for (const relation of node.relations || []) {
+        if (
+          relations.has(relation.id) ||
+          !ids.has(relation.from) ||
+          !ids.has(relation.to)
+        ) {
+          throw new Error("图关系标识重复或端点不存在");
+        }
+        relations.add(relation.id);
+      }
+    } else if (node.relations || node.direction) {
+      throw new Error("关系与方向仅用于 Diagram");
+    }
     if (node.bind && !Object.hasOwn(def.initialState, node.bind)) {
       throw new Error(`输入绑定不存在: ${node.bind}`);
     }
@@ -368,7 +423,7 @@ export const validateDefinition = (input: unknown): WidgetDefinition => {
       throw new Error("开关需要布尔初始值");
     }
     if (
-      node.type === "input" &&
+      ["input", "textarea"].includes(node.type) &&
       typeof def.initialState[node.bind!] !== "string"
     ) {
       throw new Error("文本控件需要字符串初始值");
@@ -390,8 +445,25 @@ export const validateDefinition = (input: unknown): WidgetDefinition => {
     ) {
       throw new Error("输入范围不正确");
     }
-    if (node.type === "select" && !node.options?.length) {
-      throw new Error("选择框没有选项");
+    if (["select", "segmented"].includes(node.type)) {
+      const options = node.options;
+      if (
+        !options?.length ||
+        ((def.version === 2 || node.type === "segmented") &&
+          (new Set(options).size !== options.length ||
+            typeof def.initialState[node.bind!] !== "string" ||
+            !options.includes(String(def.initialState[node.bind!]))))
+      ) {
+        throw new Error("选择控件需要不重复的选项，且初始值必须属于选项");
+      }
+      if (
+        node.type === "segmented" &&
+        (options.length < 2 ||
+          options.length > 6 ||
+          options.some((option) => !option.trim() || option.length > 32))
+      ) {
+        throw new Error("分段选择需要 2–6 个非空选项，每个最多 32 字符");
+      }
     }
     if (node.type === "repeat" && (!node.items || !node.children?.length)) {
       throw new Error("重复组件缺少数据或模板");
@@ -417,8 +489,9 @@ export const readWidget = (data: unknown): WidgetDocument | null => {
   try {
     const w = data as WidgetDocument;
     if (
-      w.version !== 1 ||
-      w.catalogVersion !== 1 ||
+      ![1, 2].includes(w.version) ||
+      w.catalogVersion !== w.version ||
+      w.definition?.version !== w.version ||
       typeof w.prompt !== "string"
     ) {
       return null;
@@ -491,7 +564,9 @@ export const reconcileState = (
       ),
     );
     const value = previous.state[key];
-    const choices = nodes.find((n) => n.type === "select")?.options;
+    const choices = nodes.find((n) =>
+      ["select", "segmented"].includes(n.type),
+    )?.options;
     if (
       compatible &&
       typeof value === typeof state[key] &&

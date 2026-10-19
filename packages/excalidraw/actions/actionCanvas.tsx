@@ -96,6 +96,7 @@ export const actionClearCanvas = register({
   perform: (elements, appState, _, app) => {
     app.imageCache.clear();
     return {
+      documentChanged: true,
       elements: elements.map((element) =>
         newElementWith(element, { isDeleted: true }),
       ),

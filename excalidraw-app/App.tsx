@@ -473,6 +473,7 @@ const ExcalidrawWrapper = () => {
     open: openRepositoryNote,
     queueSceneSave: queueRepositorySceneSave,
     repositoryNoteName,
+    documentSession,
     saveAs: saveRepositoryNoteAs,
     saveCurrent: saveCurrentRepositoryNote,
     status: repositorySyncStatus,
@@ -487,6 +488,7 @@ const ExcalidrawWrapper = () => {
     api: excalidrawAPI,
     ownerWindow,
     noteName: repositoryNoteName,
+    documentSession,
   });
   transientEdits.current = widgets.hasTransientEdits;
   const openMatrixTool = useCallback(() => {

@@ -59,6 +59,7 @@ export const useRepositoryNoteSync = ({
     string | null
   >(null);
   const [status, setStatus] = useState<RepositorySyncStatus>("unbound");
+  const [documentSession, setDocumentSession] = useState(0);
   const nameRef = useRef<string | null>(null);
   const revisionRef = useRef<string | null>(null);
   const readyRef = useRef(false);
@@ -375,6 +376,7 @@ export const useRepositoryNoteSync = ({
       saveGenerationRef.current += 1;
       debouncedSave.cancel();
       await applyRepositoryNote(name, "open");
+      setDocumentSession((value) => value + 1);
     },
     [applyRepositoryNote, debouncedSave],
   );
@@ -521,6 +523,7 @@ export const useRepositoryNoteSync = ({
     open,
     queueSceneSave,
     repositoryNoteName,
+    documentSession,
     saveAs,
     saveCurrent,
     status,

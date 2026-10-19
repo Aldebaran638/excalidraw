@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "dagre-d3-es": "7.0.13",
     "ajv": "6.12.6",
     "katex": "^0.16.22"
   },

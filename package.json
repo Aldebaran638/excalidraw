@@ -74,7 +74,7 @@
     "test:code": "eslint --max-warnings=0 --ext .js,.ts,.tsx .",
     "test:other": "yarn prettier --list-different",
     "test:typecheck": "tsc",
-    "test:widgets:browser": "node excalidraw-app/tests/widgets-browser.cjs",
+    "test:widgets:browser": "node excalidraw-app/tests/widgets-redesign.cjs",
     "test:widgets:production": "node excalidraw-app/tests/widgets-production.cjs",
     "test:update": "yarn test:app --update --watch=false",
     "test": "yarn test:app",

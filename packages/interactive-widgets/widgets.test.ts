@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { EXAMPLES } from "./examples";
+import { ARCHITECTURE, WORKFLOW, SCENARIO } from "./designExamples";
 import { applyAction, computeWidget } from "./compute";
 import { readWidget, reconcileState, validateDefinition } from "./schema";
 import { layoutWidget } from "./layout";
 import { renderSnapshot } from "./snapshot";
 import { renderFormula } from "./formula";
+import { WidgetRuntimeState } from "./runtimeState";
+import { layoutKey, rememberLayout } from "./layoutCache";
 
 import type { ResolvedNode, WidgetDocument } from "./types";
 
@@ -21,6 +24,130 @@ const document = (name: string): WidgetDocument => ({
   prompt: name,
 });
 describe("interactive component runtime", () => {
+  it("links segmented choice, multiline text and conditional content without code", () => {
+    validateDefinition(SCENARIO);
+    const state = {
+      ...SCENARIO.initialState,
+      mode: "协作",
+      details: true,
+      note: "第一行\n第二行 <script>",
+    };
+    const { tree } = computeWidget(SCENARIO, state);
+    expect(
+      flatten(tree).find((node) => node.id === "explanation")?.value,
+    ).toContain("共享");
+    expect(flatten(tree).find((node) => node.id === "previewText")?.value).toBe(
+      state.note,
+    );
+    const wide = layoutWidget(tree, 700);
+    const narrow = layoutWidget(tree, 220);
+    const choice = (layout: typeof wide) =>
+      layout.boxes.find((box) => box.node.type === "segmented")!;
+    expect(choice(narrow).height).toBeGreaterThan(choice(wide).height);
+    expect(choice(narrow).segments).toHaveLength(3);
+    expect(
+      narrow.boxes.find((box) => box.node.type === "textarea")?.lines,
+    ).toContain("第一行");
+    const svg = renderSnapshot(
+      {
+        version: 2,
+        catalogVersion: 2,
+        definition: SCENARIO,
+        state,
+        prompt: "",
+      },
+      700,
+      900,
+    );
+    expect(svg).toContain("#ededfc");
+    expect(svg).toContain("&lt;script&gt;");
+    expect(svg).not.toContain("<script>");
+    expect(
+      flatten(computeWidget(SCENARIO, SCENARIO.initialState).tree).some(
+        (node) => node.id === "notePreview",
+      ),
+    ).toBe(false);
+  });
+  it("rejects unusable segmented choices and preserves only compatible input", () => {
+    const invalid = structuredClone(SCENARIO);
+    invalid.root.children![1].options = ["专注", "专注"];
+    expect(() => validateDefinition(invalid)).toThrow(/不重复/);
+    invalid.root.children![1].options = ["一", "二"];
+    expect(() => validateDefinition(invalid)).toThrow(/初始值/);
+    const previous: WidgetDocument = {
+      version: 2,
+      catalogVersion: 2,
+      definition: SCENARIO,
+      state: { ...SCENARIO.initialState, mode: "休息" },
+      prompt: "",
+    };
+    expect(reconcileState(previous, SCENARIO).state.mode).toBe("休息");
+    const revised = structuredClone(SCENARIO);
+    revised.root.children![1].options = ["专注", "协作"];
+    expect(reconcileState(previous, revised).state.mode).toBe("专注");
+  });
+  it("shares a transient state source without resetting it when a second surface opens", () => {
+    const committed = { a: 1 };
+    const runtime = new WidgetRuntimeState(committed);
+    runtime.set({ a: 9 });
+    runtime.acceptDocument(committed);
+    expect(runtime.state.a).toBe(9);
+    runtime.acceptDocument({ a: 2 });
+    expect(runtime.state.a).toBe(2);
+  });
+  it("uses the actual measured layout for both interactive content and SVG", () => {
+    const doc = document("calculator");
+    const { tree } = computeWidget(doc.definition, doc.state);
+    const layout = layoutWidget(tree, 640, (text) => text.length * 20);
+    const title = layout.boxes.find((box) => box.node.type === "title")!;
+    title.lines = ["Shared measured line"];
+    rememberLayout(layoutKey(doc.definition, doc.state, 640), layout);
+    expect(renderSnapshot(doc, 640, 600)).toContain("Shared measured line");
+  });
+  for (const definition of [ARCHITECTURE, WORKFLOW]) {
+    it(`lays out v2 diagram groups and feedback paths: ${definition.title}`, () => {
+      validateDefinition(definition);
+      const { tree } = computeWidget(definition, definition.initialState);
+      const layout = layoutWidget(tree, 900);
+      expect(layout.edges.length).toBeGreaterThan(3);
+      expect(
+        layout.edges.every((edge) => !/NaN|undefined/.test(edge.path)),
+      ).toBe(true);
+      expect(
+        renderSnapshot(
+          {
+            version: 2,
+            catalogVersion: 2,
+            definition,
+            state: definition.initialState,
+            prompt: "",
+          },
+          900,
+          800,
+        ),
+      ).toContain("marker-end");
+      expect(
+        readWidget({
+          version: 2,
+          catalogVersion: 2,
+          definition,
+          state: definition.initialState,
+          prompt: "",
+        }),
+      ).not.toBeNull();
+    });
+  }
+  it("rejects diagram references to nested content and duplicate relation ids", () => {
+    const definition = structuredClone(WORKFLOW);
+    const diagram = definition.root.children!.find(
+      (node) => node.type === "diagram",
+    )!;
+    diagram.relations![0].from = "missing";
+    expect(() => validateDefinition(definition)).toThrow(/端点/);
+    diagram.relations![0].from = "request";
+    diagram.relations![1].id = diagram.relations![0].id;
+    expect(() => validateDefinition(definition)).toThrow(/重复/);
+  });
   it("renders trusted fraction and script SVG identically for UI and export", () => {
     const svg = renderFormula("\\frac{x^2}{\\sqrt{d}}", 240, 100);
     expect(svg).toContain("<path");

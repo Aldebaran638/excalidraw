@@ -351,7 +351,7 @@ export const computeWidget = (
     }
     const resolved: Record<string, Value> = Object.create(null);
     let error: string | undefined;
-    let value: Value | undefined;
+    let value: Value | undefined = node.bind ? cache[node.bind] : undefined;
     for (const [key, expr] of Object.entries(node.bindings || {})) {
       try {
         const result = evaluate(expr!, locals);

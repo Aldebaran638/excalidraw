@@ -1,5 +1,6 @@
 node_modules/
 build/
+server-dist/
 package-lock.json
 .vscode/
 firebase/

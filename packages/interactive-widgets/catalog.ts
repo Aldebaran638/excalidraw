@@ -2,6 +2,9 @@ import type { WidgetNode } from "./types";
 
 /** This registry is shared by validation, renderers and the model prompt. */
 export const CATALOG = {
+  diagram:
+    "Architecture/flow diagram with children, nested groups and relations {id,from,to,label?,directed?}; endpoints reference explicit child IDs",
+  group: "Named diagram group containing nodes or nested groups",
   box: "Flow container",
   row: "Wrapping horizontal container",
   column: "Vertical container",
@@ -20,8 +23,12 @@ export const CATALOG = {
   button: "Action button",
   number: "Number input, requires bind",
   input: "Text input, requires bind",
+  textarea:
+    "Multiline plain-text input; bind to string; confirm on blur or Ctrl/Cmd+Enter",
   slider: "Number slider, requires bind, min and max",
   select: "Select input, requires bind and options",
+  segmented:
+    "Visible single-choice buttons; bind to string; 2–6 unique short options, responsive wrapping",
   toggle: "Boolean switch, requires bind",
   table: "2D array table; bind enables editing",
   matrix: "2D array matrix; bind enables editing",
@@ -100,6 +107,14 @@ export const OPERATIONS = [
   "concat",
 ] as const;
 export const isContainer = (type: WidgetNode["type"]) =>
-  ["box", "row", "column", "grid", "card", "pressable", "repeat"].includes(
-    type,
-  );
+  [
+    "diagram",
+    "group",
+    "box",
+    "row",
+    "column",
+    "grid",
+    "card",
+    "pressable",
+    "repeat",
+  ].includes(type);

@@ -1,4 +1,5 @@
 import path from "path";
+
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import svgrPlugin from "vite-plugin-svgr";
@@ -7,7 +8,9 @@ import { VitePWA } from "vite-plugin-pwa";
 import checker from "vite-plugin-checker";
 import { createHtmlPlugin } from "vite-plugin-html";
 import Sitemap from "vite-plugin-sitemap";
+
 import { woff2BrowserPlugin } from "../scripts/woff2/woff2-vite-plugins";
+
 import { repositoryNotesPlugin } from "./vite-notes-plugin";
 export default defineConfig(({ mode }) => {
   // To load .env variables
@@ -18,6 +21,16 @@ export default defineConfig(({ mode }) => {
       port: Number(envVars.VITE_APP_PORT || 3000),
       // open the browser
       open: true,
+      watch: {
+        usePolling: envVars.VITE_APP_USE_POLLING === "true",
+        interval: 500,
+      },
+    },
+    optimizeDeps: {
+      include: [
+        "dagre-d3-es/src/dagre/index.js",
+        "dagre-d3-es/src/graphlib/graph.js",
+      ],
     },
     // We need to specify the envDir since now there are no
     //more located in parallel with the vite.config.ts file but in parent dir
@@ -148,7 +161,10 @@ export default defineConfig(({ mode }) => {
         eslint:
           envVars.VITE_APP_ENABLE_ESLINT === "false"
             ? undefined
-            : { lintCommand: 'eslint "./**/*.{js,ts,tsx}"' },
+            : {
+                lintCommand:
+                  'eslint --ignore-path ../.eslintignore "./**/*.{js,ts,tsx}"',
+              },
         overlay: {
           initialIsOpen: envVars.VITE_APP_COLLAPSE_OVERLAY === "false",
           badgeStyle: "margin-bottom: 4rem; margin-left: 1rem",

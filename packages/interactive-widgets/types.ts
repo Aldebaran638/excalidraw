@@ -6,6 +6,7 @@ export type Value =
   | Value[]
   | { [key: string]: Value };
 export type WidgetState = Record<string, Value>;
+export type WidgetScrollState = Record<string, { top: number; left: number }>;
 export type Expression =
   | { literal: Value }
   | { ref: string }
@@ -58,9 +59,17 @@ export type WidgetNode = {
   >;
   items?: Expression;
   itemKey?: string;
+  direction?: "LR" | "TB";
+  relations?: {
+    id: string;
+    from: string;
+    to: string;
+    label?: string;
+    directed?: boolean;
+  }[];
 };
 export type WidgetDefinition = {
-  version: 1;
+  version: 1 | 2;
   title: string;
   root: WidgetNode;
   datasets?: Record<string, Value>;
@@ -68,8 +77,8 @@ export type WidgetDefinition = {
   computations: Record<string, Expression>;
 };
 export type WidgetDocument = {
-  version: 1;
-  catalogVersion: 1;
+  version: 1 | 2;
+  catalogVersion: 1 | 2;
   definition: WidgetDefinition;
   state: WidgetState;
   prompt: string;
@@ -88,6 +97,8 @@ export type LayoutBox = {
   y: number;
   width: number;
   height: number;
+  lines?: string[];
+  segments?: { x: number; y: number; width: number; lines: string[] }[];
 };
 export const WIDGET_LINK_PREFIX = "https://widgets.excalidraw.local/";
 export const LIMITS = {
@@ -100,8 +111,10 @@ export const LIMITS = {
 export const INPUT_TYPES = [
   "number",
   "input",
+  "textarea",
   "slider",
   "select",
+  "segmented",
   "toggle",
   "player",
 ];

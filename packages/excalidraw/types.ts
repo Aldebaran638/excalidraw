@@ -1274,6 +1274,7 @@ export type ExcalidrawImperativeAPIEventMap = {
   "editor:mount": [payload: ExcalidrawMountPayload];
   "editor:initialize": [api: ExcalidrawImperativeAPI];
   "editor:unmount": [];
+  "document:replace": [];
 };
 
 export interface ExcalidrawImperativeAPI {

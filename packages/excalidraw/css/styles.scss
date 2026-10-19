@@ -935,6 +935,17 @@ body.excalidraw-cursor-resize * {
 }
 
 .excalidraw__embeddable-container {
+  &[data-embeddable-interaction="controls"] {
+    touch-action: pan-x pan-y;
+  }
+  &[data-embeddable-interaction="controls"] {
+    [data-embeddable-control] {
+      pointer-events: auto;
+    }
+    &[data-embeddable-controls-enabled="false"] * {
+      pointer-events: none !important;
+    }
+  }
   .excalidraw__embeddable-container__inner {
     position: relative;
     overflow: hidden;
@@ -996,4 +1007,11 @@ body.excalidraw-cursor-resize * {
     letter-spacing: 0.6px;
     font-family: "Assistant";
   }
+}
+.excalidraw:is([data-embeddable-space="true"], [data-embeddable-pinch="true"], [data-embeddable-controls-enabled="false"])
+  [data-embeddable-interaction="controls"],
+.excalidraw:is([data-embeddable-space="true"], [data-embeddable-pinch="true"], [data-embeddable-controls-enabled="false"])
+  [data-embeddable-interaction="controls"]
+  * {
+  pointer-events: none !important;
 }

@@ -6,7 +6,11 @@ import {
   newElementWith,
   newEmbeddableElement,
 } from "@excalidraw/element";
-import { viewportCoordsToSceneCoords } from "@excalidraw/common";
+import {
+  viewportCoordsToSceneCoords,
+  sceneCoordsToViewportCoords,
+  randomId,
+} from "@excalidraw/common";
 
 import type {
   ExcalidrawElement,
@@ -15,6 +19,13 @@ import type {
 } from "@excalidraw/element/types";
 
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
+
+import {
+  readWidgetDrafts,
+  removeWidgetDraft,
+  saveWidgetDraft,
+  widgetDraftStore,
+} from "../data/widgetDrafts";
 
 import { computeWidget } from "../../packages/interactive-widgets/compute";
 import { layoutWidget } from "../../packages/interactive-widgets/layout";
@@ -25,12 +36,16 @@ import {
 } from "../../packages/interactive-widgets/schema";
 import { renderSnapshot } from "../../packages/interactive-widgets/snapshot";
 import { WidgetView } from "../../packages/interactive-widgets/WidgetView";
+import { WidgetRuntimeState } from "../../packages/interactive-widgets/runtimeState";
 import { WIDGET_LINK_PREFIX } from "../../packages/interactive-widgets/types";
+
+import type { WidgetDraft } from "../data/widgetDrafts";
 
 import type {
   WidgetDefinition,
   WidgetDocument,
   WidgetState,
+  WidgetScrollState,
 } from "../../packages/interactive-widgets/types";
 
 type Region = { x: number; y: number; width: number; height: number };
@@ -41,7 +56,6 @@ type Session = {
   target?: string;
   definition?: WidgetDefinition;
 };
-const SETTINGS_KEY = "aldebaran.ai-widgets.confirm";
 export const isWidgetElement = (el: ExcalidrawElement) =>
   el.type === "embeddable" && Boolean(el.customData?.aiWidget);
 export const widgetMetadata = (
@@ -53,7 +67,7 @@ export const widgetMetadata = (
   aiWidget: doc,
   embeddable: {
     contentLocked: true,
-    interaction: "doubleClick",
+    interaction: "controls",
     snapshot: renderSnapshot(doc, width, height, scroll),
     snapshotWidth: width,
     snapshotHeight: height,
@@ -64,10 +78,12 @@ export const useAIWidgets = ({
   api,
   ownerWindow,
   noteName,
+  documentSession,
 }: {
   api: ExcalidrawImperativeAPI | null;
   ownerWindow: Window | null;
   noteName: string | null;
+  documentSession: number;
 }) => {
   const [session, setSession] = useState<Session | null>(null);
   const sessionRef = useRef(session);
@@ -75,6 +91,25 @@ export const useAIWidgets = ({
   const [prompt, setPrompt] = useState("");
   const [context, setContext] = useState<ContextItem[]>([]);
   const [preview, setPreview] = useState<WidgetDocument | null>(null);
+  const previewRef = useRef(preview);
+  previewRef.current = preview;
+  const [candidates, setCandidates] = useState<WidgetDocument[]>([]);
+  const [candidateIndex, setCandidateIndex] = useState(-1);
+  const candidatesRef = useRef(candidates);
+  candidatesRef.current = candidates;
+  const candidateIndexRef = useRef(candidateIndex);
+  candidateIndexRef.current = candidateIndex;
+  const [collapsed, setCollapsed] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const [applyTrialInputs, setApplyTrialInputs] = useState(false);
+  const [viewport, setViewport] = useState(0);
+  const viewportKey = useRef("");
+  const [recovery, setRecovery] = useState<WidgetDraft[]>([]);
+  const [storageError, setStorageError] = useState("");
+  const draftStorage = useRef<ReturnType<typeof widgetDraftStore> | null>(null);
+  const draftKey = useRef<string | null>(null);
+  const tabId = useRef("");
+  const pendingDraft = useRef<WidgetDraft | null>(null);
   const [phase, setPhase] = useState("");
   const [error, setError] = useState("");
   const [explanation, setExplanation] = useState("");
@@ -82,13 +117,13 @@ export const useAIWidgets = ({
     available: boolean;
     model: string;
   } | null>(null);
-  const [confirmChanges, setConfirmChanges] = useState(true);
   const [selected, setSelected] =
     useState<NonDeleted<ExcalidrawEmbeddableElement> | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const controller = useRef<AbortController | null>(null);
   const dirty = useRef(new Set<string>());
   const scrolls = useRef(new Map<string, number>());
+  const tableScrolls = useRef(new Map<string, WidgetScrollState>());
   const currentNote = useRef(noteName);
   currentNote.current = noteName;
   const shapeHeight = useRef(new Map<string, number>());
@@ -96,6 +131,20 @@ export const useAIWidgets = ({
   const currentElements = useRef<readonly ExcalidrawElement[]>([]);
   const commitDrafts = useRef(new Map<string, () => void>());
   const snapshotTimers = useRef(new Map<string, number>());
+  const runtimes = useRef(
+    new Map<
+      string,
+      { document: WidgetDocument; runtime: WidgetRuntimeState }
+    >(),
+  );
+  const runtimeFor = useCallback((id: string, document: WidgetDocument) => {
+    let entry = runtimes.current.get(id);
+    if (!entry) {
+      entry = { document, runtime: new WidgetRuntimeState(document.state) };
+      runtimes.current.set(id, entry);
+    }
+    return entry.runtime;
+  }, []);
   const hasTransientEdits = useCallback(
     () => Boolean(dirty.current.size || sessionRef.current),
     [],
@@ -107,55 +156,249 @@ export const useAIWidgets = ({
     });
   }, [api]);
   useEffect(() => {
+    if (!ownerWindow) {
+      return;
+    }
     try {
-      setConfirmChanges(
-        ownerWindow?.localStorage.getItem(SETTINGS_KEY) !== "false",
-      );
+      tabId.current =
+        ownerWindow.sessionStorage.getItem("ai-widget-draft-tab") || randomId();
+      ownerWindow.sessionStorage.setItem("ai-widget-draft-tab", tabId.current);
+      draftStorage.current = widgetDraftStore(ownerWindow);
     } catch {
-      /* In-memory setting works without storage. */
+      setStorageError("仅当前会话保留：本地草稿存储不可用");
     }
   }, [ownerWindow]);
-  const changeConfirmation = (value: boolean) => {
-    setConfirmChanges(value);
-    try {
-      ownerWindow?.localStorage.setItem(SETTINGS_KEY, String(value));
-    } catch {
-      /* optional persistence */
+  useEffect(() => {
+    if (!draftStorage.current) {
+      return;
     }
+    let alive = true;
+    void readWidgetDrafts(draftStorage.current, tabId.current, noteName)
+      .then((drafts) => {
+        if (alive) {
+          setRecovery(drafts);
+        }
+      })
+      .catch(() => setStorageError("仅当前会话保留：本地草稿存储不可用"));
+    return () => {
+      alive = false;
+    };
+  }, [ownerWindow, noteName, documentSession]);
+  useEffect(() => {
+    if (!session || !ownerWindow || !draftStorage.current) {
+      pendingDraft.current = null;
+      return;
+    }
+    const key = (draftKey.current ||= `${tabId.current}:${
+      noteName || "untitled"
+    }:${session.target || randomId()}`);
+    const savedCandidates = candidates.map((candidate, index) =>
+      index === candidateIndex && preview ? preview : candidate,
+    );
+    const draft: WidgetDraft = {
+      key,
+      updated: Date.now(),
+      note: noteName,
+      session,
+      prompt,
+      context,
+      candidates: savedCandidates,
+      candidateIndex,
+    };
+    pendingDraft.current = draft;
+    const store = draftStorage.current;
+    const save = () => {
+      void saveWidgetDraft(store, draft).catch(() =>
+        setStorageError("仅当前会话保留：本地草稿保存失败"),
+      );
+    };
+    const timer = ownerWindow.setTimeout(save, 500);
+    return () => ownerWindow.clearTimeout(timer);
+  }, [
+    session,
+    prompt,
+    context,
+    candidates,
+    candidateIndex,
+    preview,
+    ownerWindow,
+    noteName,
+  ]);
+  useEffect(() => {
+    const flush = () => {
+      if (pendingDraft.current && draftStorage.current) {
+        void saveWidgetDraft(draftStorage.current, pendingDraft.current).catch(
+          () => {},
+        );
+      }
+    };
+    ownerWindow?.addEventListener("pagehide", flush);
+    return () => {
+      ownerWindow?.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, [ownerWindow]);
+  const rememberCandidate = (document: WidgetDocument) => {
+    const next = [
+      ...candidatesRef.current.slice(0, candidateIndexRef.current + 1),
+      document,
+    ].slice(-10);
+    candidatesRef.current = next;
+    candidateIndexRef.current = next.length - 1;
+    setCandidates(next);
+    setCandidateIndex(next.length - 1);
+    setPreview(document);
+    setShowOriginal(false);
   };
+  useEffect(() => {
+    if (preview && candidateIndex >= 0) {
+      setCandidates((previous) =>
+        previous[candidateIndex] === preview
+          ? previous
+          : previous.map((candidate, index) =>
+              index === candidateIndex ? preview : candidate,
+            ),
+      );
+    }
+  }, [preview, candidateIndex]);
   const cancel = useCallback(() => {
     controller.current?.abort();
     controller.current = null;
     setPhase("");
   }, []);
   const close = useCallback(() => {
+    pendingDraft.current = null;
     cancel();
     setSession(null);
     setPreview(null);
     setError("");
     setContext([]);
+    setCandidates([]);
+    setCandidateIndex(-1);
+    setCollapsed(false);
+    if (draftStorage.current && draftKey.current) {
+      void removeWidgetDraft(draftStorage.current, draftKey.current).catch(
+        () => {},
+      );
+    }
+    draftKey.current = null;
   }, [cancel]);
   useEffect(() => () => controller.current?.abort(), []);
+  useEffect(
+    () =>
+      api?.onEvent("document:replace", () => {
+        if (pendingDraft.current && draftStorage.current) {
+          void saveWidgetDraft(
+            draftStorage.current,
+            pendingDraft.current,
+          ).catch(() => {});
+        }
+        cancel();
+        setSession(null);
+        setPreview(null);
+        setExpanded(null);
+        draftKey.current = null;
+      }),
+    [api, cancel],
+  );
+  const previousDocument = useRef(documentSession);
   useEffect(() => {
     const active = sessionRef.current;
-    if (active && active.note !== noteName) {
+    if (active && previousDocument.current !== documentSession) {
+      if (pendingDraft.current && draftStorage.current) {
+        void saveWidgetDraft(draftStorage.current, pendingDraft.current).catch(
+          () => {},
+        );
+      }
       cancel();
       setError("笔记已切换，旧生成结果不会应用到这篇笔记。");
       setPreview(null);
+      setSession(null);
+      setExpanded(null);
+    } else if (active && active.note !== noteName) {
+      setSession({ ...active, note: noteName });
     }
-  }, [noteName, cancel]);
+    previousDocument.current = documentSession;
+  }, [noteName, documentSession, cancel]);
+  useEffect(
+    () =>
+      api?.onScrollChange(() => {
+        if (
+          !sessionRef.current &&
+          !api
+            .getSceneElements()
+            .some(
+              (element) =>
+                isWidgetElement(element) &&
+                api.getAppState().selectedElementIds[element.id],
+            )
+        ) {
+          return;
+        }
+        const state = api.getAppState();
+        const key = [
+          state.scrollX,
+          state.scrollY,
+          state.zoom.value,
+          state.width,
+          state.height,
+          state.offsetLeft,
+          state.offsetTop,
+        ].join(":");
+        if (viewportKey.current !== key) {
+          viewportKey.current = key;
+          setViewport((value) => value + 1);
+        }
+      }),
+    [api],
+  );
   useEffect(() => {
     if (!api || !ownerWindow) {
       return;
     }
     const unsubscribe = api.onChange((elements, appState) => {
       currentElements.current = elements;
+      const camera = [
+        appState.scrollX,
+        appState.scrollY,
+        appState.zoom.value,
+        appState.width,
+        appState.height,
+        appState.offsetLeft,
+        appState.offsetTop,
+      ].join(":");
+      if (
+        viewportKey.current !== camera &&
+        (sessionRef.current ||
+          elements.some(
+            (element) =>
+              isWidgetElement(element) &&
+              appState.selectedElementIds[element.id],
+          ))
+      ) {
+        viewportKey.current = camera;
+        setViewport((value) => value + 1);
+      }
       const target = elements.find(
         (el) =>
           !el.isDeleted &&
           appState.selectedElementIds[el.id] &&
           isWidgetElement(el),
       );
+      const active = sessionRef.current;
+      if (
+        active?.target &&
+        !elements.some(
+          (element) => element.id === active.target && !element.isDeleted,
+        )
+      ) {
+        controller.current?.abort();
+        controller.current = null;
+        setPhase("");
+        setError(
+          "目标组件已删除。草稿仍保留，请恢复目标后应用，或重新创建组件。",
+        );
+      }
       setSelected((previous) =>
         target
           ? previous === target
@@ -171,6 +414,7 @@ export const useAIWidgets = ({
         if (!doc) {
           continue;
         }
+        runtimeFor(el.id, doc);
         const key = [el.width, el.height, JSON.stringify(doc)].join(":");
         if (cachedGeometry.current.get(el.id) === key) {
           continue;
@@ -197,6 +441,7 @@ export const useAIWidgets = ({
               Math.max(120, live.width),
               Math.max(80, live.height),
               scrolls.current.get(el.id) || 0,
+              tableScrolls.current.get(el.id),
             );
             cacheEmbeddableSnapshot(live, snapshot);
           } catch {
@@ -214,7 +459,7 @@ export const useAIWidgets = ({
       }
       timers.clear();
     };
-  }, [api, ownerWindow]);
+  }, [api, ownerWindow, runtimeFor]);
   useEffect(() => {
     if (!api || !ownerWindow) {
       return;
@@ -282,12 +527,13 @@ export const useAIWidgets = ({
         if (width < 20 || height < 20) {
           return;
         }
+        cancel();
         setSession({
           region: {
             x: Math.min(origin.x, end.x),
             y: Math.min(origin.y, end.y),
-            width: Math.max(240, width),
-            height: Math.max(160, height),
+            width,
+            height,
           },
           note: currentNote.current,
         });
@@ -296,6 +542,11 @@ export const useAIWidgets = ({
         setPreview(null);
         setError("");
         setExplanation("");
+        setCandidates([]);
+        setCandidateIndex(-1);
+        setCollapsed(false);
+        setShowOriginal(false);
+        draftKey.current = null;
       };
       cleanRegion = cleanup;
       ownerWindow.addEventListener("pointermove", move);
@@ -307,7 +558,7 @@ export const useAIWidgets = ({
       cleanRegion?.();
       unsubscribe();
     };
-  }, [api, ownerWindow]);
+  }, [api, ownerWindow, cancel]);
 
   const commitState = useCallback(
     (id: string, state: WidgetState) => {
@@ -367,18 +618,40 @@ export const useAIWidgets = ({
         setError("组件定义已变化，请重新生成后应用。");
         return;
       }
-      const reconciled = reconcileState(oldDocument, document.definition);
+      const reconciled = reconcileState(
+        oldDocument && active.target
+          ? {
+              ...oldDocument,
+              state:
+                runtimes.current.get(active.target)?.runtime.state ||
+                oldDocument.state,
+            }
+          : oldDocument,
+        document.definition,
+      );
       const next: WidgetDocument = {
         ...document,
-        state: oldDocument ? reconciled.state : document.state,
+        version: 2,
+        catalogVersion: 2,
+        definition: { ...document.definition, version: 2 },
+        state:
+          oldDocument && !applyTrialInputs ? reconciled.state : document.state,
       };
-      const region = old || active.region;
-      const metadata = widgetMetadata(next, region.width, region.height);
+      const region = active.region;
+      let metadata: ReturnType<typeof widgetMetadata>;
+      try {
+        metadata = widgetMetadata(next, region.width, region.height);
+      } catch (error) {
+        setError(`候选无法应用：${(error as Error).message}`);
+        return;
+      }
       if (old) {
         api.updateScene({
           elements: elements.map((e) =>
             e.id === old.id
               ? newElementWith(e, {
+                  width: region.width,
+                  height: region.height,
                   customData: { ...e.customData, ...metadata },
                 })
               : e,
@@ -413,8 +686,15 @@ export const useAIWidgets = ({
       setPreview(null);
       setContext([]);
       setError("");
+      pendingDraft.current = null;
+      if (draftStorage.current && draftKey.current) {
+        void removeWidgetDraft(draftStorage.current, draftKey.current).catch(
+          () => {},
+        );
+      }
+      draftKey.current = null;
     },
-    [api],
+    [api, applyTrialInputs],
   );
   const generate = async () => {
     const active = sessionRef.current;
@@ -443,7 +723,7 @@ export const useAIWidgets = ({
       const live = active.target
         ? api?.getSceneElements().find((e) => e.id === active.target)
         : null;
-      const old = readWidget(live?.customData?.aiWidget);
+      const old = preview || readWidget(live?.customData?.aiWidget);
       const response = await ownerWindow.fetch("/api/ai/widgets/generate", {
         method: "POST",
         signal: abort.signal,
@@ -453,6 +733,8 @@ export const useAIWidgets = ({
           context: context.map((c) => ({ label: c.label, content: c.content })),
           currentDefinition: old?.definition,
           currentState: old?.state,
+          region: { width: active.region.width, height: active.region.height },
+          initialIntent: candidates[0]?.prompt || prompt,
         }),
       });
       const result = await response.json();
@@ -461,31 +743,46 @@ export const useAIWidgets = ({
       }
       if (
         controller.current !== abort ||
-        sessionRef.current !== active ||
-        active.note !== currentNote.current
+        !sessionRef.current ||
+        sessionRef.current.target !== active.target
       ) {
         return;
       }
       setPhase("正在校验与准备预览…");
-      const definition = validateDefinition(result.definition);
-      const reconciled = reconcileState(old, definition);
+      const returnedDefinition = validateDefinition(result.definition);
+      const definition: WidgetDefinition =
+        returnedDefinition.version === 1
+          ? { ...returnedDefinition, version: 2 }
+          : returnedDefinition;
+      const latest =
+        previewRef.current ||
+        readWidget(
+          api
+            ?.getSceneElements()
+            .find((element) => element.id === active.target)?.customData
+            ?.aiWidget,
+        );
+      const latestState = runtimes.current.get(
+        previewRef.current ? "creative-preview" : active.target || "",
+      )?.runtime.state;
+      const reconciled = reconcileState(
+        latest && latestState ? { ...latest, state: latestState } : latest,
+        definition,
+      );
       const doc: WidgetDocument = {
-        version: 1,
-        catalogVersion: 1,
+        version: definition.version,
+        catalogVersion: definition.version,
         definition,
         state: reconciled.state,
         prompt,
       };
-      setPreview(doc);
+      rememberCandidate(doc);
       setExplanation(
         result.explanation +
           (reconciled.reset.length
             ? ` 将重置: ${reconciled.reset.join("、")}`
             : ""),
       );
-      if (active.target && !confirmChanges) {
-        applyPreview(doc);
-      }
     } catch (e) {
       if (!abort.signal.aborted) {
         setError((e as Error).message);
@@ -501,11 +798,17 @@ export const useAIWidgets = ({
     if (!element) {
       return;
     }
+    cancel();
     const doc = readWidget(element.customData?.aiWidget);
     setSession({
       target: element.id,
       definition: doc?.definition,
-      region: element,
+      region: {
+        x: element.x,
+        y: element.y,
+        width: element.width,
+        height: element.height,
+      },
       note: noteName,
     });
     setPrompt("");
@@ -513,6 +816,12 @@ export const useAIWidgets = ({
     setPreview(null);
     setError("");
     setExplanation("");
+    setCandidates([]);
+    setCandidateIndex(-1);
+    setCollapsed(false);
+    setShowOriginal(false);
+    setApplyTrialInputs(false);
+    draftKey.current = null;
   };
   const addContext = () => {
     if (!api) {
@@ -570,6 +879,7 @@ export const useAIWidgets = ({
           element={element}
           api={api}
           onCommit={commitState}
+          runtimeFor={runtimeFor}
           onDraft={(id, value) => {
             if (value) {
               dirty.current.add(id);
@@ -577,9 +887,32 @@ export const useAIWidgets = ({
               dirty.current.delete(id);
             }
           }}
-          onHeight={(id, height) => shapeHeight.current.set(id, height)}
-          onScroll={(id, value) => {
+          onHeight={(id, height) => {
+            shapeHeight.current.set(id, height);
+            const live = api
+              ?.getSceneElements()
+              .find((element) => element.id === id);
+            const document = readWidget(live?.customData?.aiWidget);
+            if (live && document) {
+              try {
+                cacheEmbeddableSnapshot(
+                  live,
+                  renderSnapshot(
+                    document,
+                    Math.max(120, live.width),
+                    Math.max(80, live.height),
+                    scrolls.current.get(id) || 0,
+                    tableScrolls.current.get(id),
+                  ),
+                );
+              } catch {
+                /* Keep the last valid snapshot. */
+              }
+            }
+          }}
+          onScroll={(id, value, regions) => {
             scrolls.current.set(id, value);
+            tableScrolls.current.set(id, regions);
             const live = api?.getSceneElements().find((el) => el.id === id);
             const doc = readWidget(live?.customData?.aiWidget);
             if (live && doc) {
@@ -591,6 +924,7 @@ export const useAIWidgets = ({
                     Math.max(120, live.width),
                     Math.max(80, live.height),
                     value,
+                    regions,
                   ),
                 );
               } catch {
@@ -608,12 +942,37 @@ export const useAIWidgets = ({
         />
       );
     },
-    [api, commitState, exit],
+    [api, commitState, exit, runtimeFor],
   );
   const expandedElement = expanded
     ? api?.getSceneElements().find((e) => e.id === expanded)
     : null;
   const expandedDocument = readWidget(expandedElement?.customData?.aiWidget);
+  // Coordinates are relative to the Excalidraw root, never a guessed zoom scale.
+  void viewport;
+  const bounds = (region: Region) => {
+    const state = api?.getAppState();
+    if (!state) {
+      return null;
+    }
+    const point = sceneCoordsToViewportCoords(
+      { sceneX: region.x, sceneY: region.y },
+      state,
+    );
+    return {
+      left: point.x - state.offsetLeft,
+      top: point.y - state.offsetTop,
+      width: region.width * state.zoom.value,
+      height: region.height * state.zoom.value,
+      zoom: state.zoom.value,
+    };
+  };
+  const original = session?.target
+    ? readWidget(
+        api?.getSceneElements().find((element) => element.id === session.target)
+          ?.customData?.aiWidget,
+      )
+    : null;
   return {
     session,
     prompt,
@@ -628,8 +987,58 @@ export const useAIWidgets = ({
     error,
     explanation,
     model,
-    confirmChanges,
-    changeConfirmation,
+    collapsed,
+    setCollapsed,
+    showOriginal,
+    setShowOriginal,
+    applyTrialInputs,
+    setApplyTrialInputs,
+    candidates,
+    candidateIndex,
+    previousCandidate: () => {
+      const index = candidateIndex - 1;
+      if (index >= 0) {
+        setCandidateIndex(index);
+        setPreview(candidates[index]);
+        setShowOriginal(false);
+      }
+    },
+    resetList:
+      original && preview
+        ? reconcileState(original, preview.definition).reset
+        : [],
+    original,
+    regionBounds: session ? bounds(session.region) : null,
+    selectedBounds: selected ? bounds(selected) : null,
+    viewportSize: {
+      width: api?.getAppState().width || 1000,
+      height: api?.getAppState().height || 800,
+    },
+    storageError,
+    recovery,
+    recover: (draft: WidgetDraft) => {
+      cancel();
+      draftKey.current = draft.key;
+      setSession(draft.session);
+      setPrompt(draft.prompt);
+      setContext(draft.context);
+      setCandidates(draft.candidates);
+      setCandidateIndex(draft.candidateIndex);
+      setPreview(draft.candidates[draft.candidateIndex] || null);
+      setCollapsed(false);
+      setRecovery([]);
+    },
+    expandPreview: (height: number) => {
+      if (session) {
+        setSession({
+          ...session,
+          region: {
+            ...session.region,
+            height: Math.min(20000, Math.max(session.region.height, height)),
+          },
+        });
+      }
+    },
     generate,
     applyPreview,
     close,
@@ -643,6 +1052,13 @@ export const useAIWidgets = ({
     setExpanded,
     expanded,
     expandedDocument,
+    expandedRuntime:
+      expanded && expandedDocument
+        ? runtimeFor(expanded, expandedDocument)
+        : undefined,
+    previewRuntime: preview
+      ? runtimeFor("creative-preview", preview)
+      : undefined,
     expandedDraft: (value: boolean) => {
       if (expanded) {
         if (value) {
@@ -686,11 +1102,12 @@ export const useAIWidgets = ({
       }
     },
     loadExample: (definition: WidgetDefinition) => {
+      cancel();
       validateDefinition(definition);
-      setPreview({
-        version: 1,
-        catalogVersion: 1,
-        definition,
+      rememberCandidate({
+        version: 2,
+        catalogVersion: 2,
+        definition: { ...definition, version: 2 },
         state: structuredClone(definition.initialState),
         prompt: `本地示例: ${definition.title}`,
       });
@@ -719,15 +1136,17 @@ const WidgetEmbed = ({
   onScroll,
   onExit,
   registerDraft,
+  runtimeFor,
 }: {
   element: ExcalidrawEmbeddableElement;
   api: ExcalidrawImperativeAPI | null;
   onCommit: (id: string, state: WidgetState) => void;
   onDraft: (id: string, value: boolean) => void;
   onHeight: (id: string, height: number) => void;
-  onScroll: (id: string, scroll: number) => void;
+  onScroll: (id: string, scroll: number, regions: WidgetScrollState) => void;
   onExit: () => void;
   registerDraft: (flush: () => void) => () => void;
+  runtimeFor: (id: string, document: WidgetDocument) => WidgetRuntimeState;
 }) => {
   const doc = readWidget(element.customData?.aiWidget);
   if (!doc) {
@@ -740,11 +1159,12 @@ const WidgetEmbed = ({
   return (
     <WidgetView
       document={doc}
+      runtime={runtimeFor(element.id, doc)}
       width={Math.max(120, element.width)}
       onCommit={(state) => onCommit(element.id, state)}
       onDraft={(value) => onDraft(element.id, value)}
       onLayout={(height) => onHeight(element.id, height)}
-      onScroll={(scroll) => onScroll(element.id, scroll)}
+      onScroll={(scroll, regions) => onScroll(element.id, scroll, regions)}
       onExit={onExit}
       registerDraft={registerDraft}
     />
