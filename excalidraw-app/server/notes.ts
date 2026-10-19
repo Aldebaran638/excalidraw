@@ -4,6 +4,10 @@ import path from "node:path";
 
 import { watch } from "chokidar";
 
+import { readMetadata } from "../data/noteIdentity";
+
+import { identityFiles } from "./chatStore";
+
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export type NoteChange = {
@@ -178,7 +182,7 @@ export const createNoteService = async (directory: string) => {
         return true;
       }
       if (req.method === "PUT") {
-        const content = await readBody(req);
+        let content = await readBody(req);
         const parsed = JSON.parse(content);
         if (
           !parsed ||
@@ -208,6 +212,42 @@ export const createNoteService = async (directory: string) => {
           ) {
             sendJson(res, 409, { error: "Repository note changed locally" });
             return;
+          }
+          let oldMetadata = null;
+          try {
+            oldMetadata = existing
+              ? readMetadata(JSON.parse(existing).repositoryMetadata)
+              : null;
+          } catch {
+            /* An explicitly overwritten broken document has no readable identity. */
+          }
+          const metadata =
+            readMetadata(parsed.repositoryMetadata) || oldMetadata;
+          if (
+            parsed.repositoryMetadata &&
+            !readMetadata(parsed.repositoryMetadata)
+          ) {
+            sendJson(res, 400, { error: "Invalid repository metadata" });
+            return;
+          }
+          if (metadata) {
+            const duplicates = (
+              await identityFiles(directory, metadata.noteId)
+            ).filter((other) => other !== name);
+            if (duplicates.length) {
+              sendJson(res, 409, {
+                error: "检测到复制笔记，请为副本建立独立聊天身份",
+                code: "DuplicateNoteIdentity",
+              });
+              return;
+            }
+            if (!parsed.repositoryMetadata) {
+              content = JSON.stringify(
+                { ...parsed, repositoryMetadata: metadata },
+                null,
+                2,
+              );
+            }
           }
           const revision = revisionOf(content);
           const client = req.headers["x-repository-client-id"];

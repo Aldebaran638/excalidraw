@@ -150,6 +150,7 @@ import "./index.scss";
 
 import { ExcalidrawPlusPromoBanner } from "./components/ExcalidrawPlusPromoBanner";
 import { AppSidebar } from "./components/AppSidebar";
+import { NoteChatController } from "./data/noteChats";
 import { RepositoryNotesDialog } from "./components/RepositoryNotesDialog";
 import { RepositorySyncStatus } from "./components/RepositorySyncStatus";
 import { useRepositoryNoteSync } from "./hooks/useRepositoryNoteSync";
@@ -473,6 +474,8 @@ const ExcalidrawWrapper = () => {
     open: openRepositoryNote,
     queueSceneSave: queueRepositorySceneSave,
     repositoryNoteName,
+    repositoryNoteId,
+    ensureNoteIdentity,
     documentSession,
     saveAs: saveRepositoryNoteAs,
     saveCurrent: saveCurrentRepositoryNote,
@@ -491,6 +494,37 @@ const ExcalidrawWrapper = () => {
     documentSession,
   });
   transientEdits.current = widgets.hasTransientEdits;
+  const chatBindings = useRef({
+    ensureNoteIdentity,
+    capture: widgets.captureChatSnapshot,
+  });
+  chatBindings.current = {
+    ensureNoteIdentity,
+    capture: widgets.captureChatSnapshot,
+  };
+  const chats = useMemo(
+    () =>
+      ownerWindow
+        ? new NoteChatController(
+            ownerWindow as Window & typeof globalThis,
+            (fork) => chatBindings.current.ensureNoteIdentity(fork),
+            () => chatBindings.current.capture(),
+          )
+        : null,
+    [ownerWindow],
+  );
+  if (chats) {
+    chats.ensureIdentity = ensureNoteIdentity;
+    chats.capture = widgets.captureChatSnapshot;
+  }
+  useEffect(() => {
+    chats?.bind({
+      noteId: repositoryNoteId,
+      name: repositoryNoteName,
+      documentSession,
+    });
+  }, [chats, repositoryNoteId, repositoryNoteName, documentSession]);
+  useEffect(() => () => chats?.dispose(), [chats]);
   const openMatrixTool = useCallback(() => {
     excalidrawAPI?.setActiveTool({ type: "matrix" });
   }, [excalidrawAPI]);
@@ -804,10 +838,11 @@ const ExcalidrawWrapper = () => {
       flushRepositorySync();
 
       if (
-        excalidrawAPI &&
-        LocalData.fileStorage.shouldPreventUnload(
-          excalidrawAPI.getSceneElements(),
-        )
+        chats?.hasUnsaved() ||
+        (excalidrawAPI &&
+          LocalData.fileStorage.shouldPreventUnload(
+            excalidrawAPI.getSceneElements(),
+          ))
       ) {
         if (import.meta.env.VITE_APP_DISABLE_PREVENT_UNLOAD !== "true") {
           preventUnload(event);
@@ -818,11 +853,11 @@ const ExcalidrawWrapper = () => {
         }
       }
     };
-    window.addEventListener(EVENT.BEFORE_UNLOAD, unloadHandler);
+    ownerWindow?.addEventListener(EVENT.BEFORE_UNLOAD, unloadHandler);
     return () => {
-      window.removeEventListener(EVENT.BEFORE_UNLOAD, unloadHandler);
+      ownerWindow?.removeEventListener(EVENT.BEFORE_UNLOAD, unloadHandler);
     };
-  }, [excalidrawAPI, flushRepositorySync]);
+  }, [excalidrawAPI, flushRepositorySync, ownerWindow, chats]);
 
   const onChange = (
     elements: readonly OrderedExcalidrawElement[],
@@ -1179,6 +1214,13 @@ const ExcalidrawWrapper = () => {
           }}
           onSaveRepositoryAs={() => setRepositoryDialog("saveAs")}
           onOpenRepository={() => setRepositoryDialog("open")}
+          onOpenNoteChat={() =>
+            excalidrawAPI?.toggleSidebar({
+              name: "default",
+              tab: "note-chat",
+              force: true,
+            })
+          }
           onInsertMatrix={openMatrixTool}
         />
         {repositoryDialog && (
@@ -1214,7 +1256,16 @@ const ExcalidrawWrapper = () => {
             </OverwriteConfirmDialog.Action>
           )}
         </OverwriteConfirmDialog>
-        <AppFooter onChange={() => excalidrawAPI?.refresh()} />
+        <AppFooter
+          onChange={() => excalidrawAPI?.refresh()}
+          onChatOpen={() =>
+            excalidrawAPI?.toggleSidebar({
+              name: "default",
+              tab: "note-chat",
+              force: true,
+            })
+          }
+        />
         {excalidrawAPI && <AIComponents excalidrawAPI={excalidrawAPI} />}
 
         <TTDDialogTrigger />
@@ -1256,7 +1307,7 @@ const ExcalidrawWrapper = () => {
           }}
         />
 
-        <AppSidebar />
+        <AppSidebar chats={chats} />
         <AIWidgetPanel
           widgets={widgets}
           conflict={externalUpdate?.name || null}

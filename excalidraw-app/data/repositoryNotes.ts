@@ -2,7 +2,12 @@ import { loadFromBlob } from "@excalidraw/excalidraw/data/blob";
 import { serializeAsJSON } from "@excalidraw/excalidraw/data/json";
 
 import type { AppState, BinaryFiles } from "@excalidraw/excalidraw/types";
+
 import type { OrderedExcalidrawElement } from "@excalidraw/element/types";
+
+import { readMetadata } from "./noteIdentity";
+
+import type { RepositoryMetadata } from "./noteIdentity";
 
 export type RepositoryNoteChange = Readonly<{
   name: string;
@@ -17,13 +22,24 @@ export type RepositoryNoteSaveOptions = Readonly<{
   clientId?: string | null;
   /** Reuse a snapshot serialized by the sync queue. */
   serializedContent?: string;
+  metadata?: RepositoryMetadata | null;
 }>;
 
 export const serializeRepositoryNote = (
   elements: readonly OrderedExcalidrawElement[],
   appState: AppState,
   files: BinaryFiles,
-) => serializeAsJSON(elements, appState, files, "local");
+  metadata?: RepositoryMetadata | null,
+) => {
+  const content = serializeAsJSON(elements, appState, files, "local");
+  return metadata
+    ? JSON.stringify(
+        { ...JSON.parse(content), repositoryMetadata: metadata },
+        null,
+        2,
+      )
+    : content;
+};
 
 export const subscribeToRepositoryNoteChanges = (
   listener: (change: RepositoryNoteChange) => void,
@@ -92,7 +108,7 @@ export const saveRepositoryNote = async (
   const filename = normalizeRepositoryNoteName(name);
   const content =
     options.serializedContent ??
-    serializeRepositoryNote(elements, appState, files);
+    serializeRepositoryNote(elements, appState, files, options.metadata);
   const response = await fetch(`/api/notes/${encodeURIComponent(filename)}`, {
     method: "PUT",
     headers: {
@@ -108,6 +124,15 @@ export const saveRepositoryNote = async (
     body: content,
   });
   if (response.status === 409 || response.status === 412) {
+    const detail = await response
+      .clone()
+      .json()
+      .catch(() => null);
+    if (detail?.code === "DuplicateNoteIdentity") {
+      const error = new Error(detail.error);
+      error.name = "RepositoryNoteIdentityConflictError";
+      throw error;
+    }
     const error = new Error("Repository note changed locally");
     error.name = "RepositoryNoteConflictError";
     throw error;
@@ -144,8 +169,10 @@ export const loadRepositoryNote = async (name: string) => {
   if (!response.ok) {
     throw new Error("Unable to load repository note");
   }
+  const parsed = await response.clone().json();
   return {
     ...(await loadFromBlob(await response.blob(), null, null)),
+    metadata: readMetadata(parsed.repositoryMetadata),
     revision: response.headers.get("ETag")?.replaceAll('"', "") || null,
   };
 };

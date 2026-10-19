@@ -37,10 +37,9 @@ describe("repository note transport", () => {
   });
 
   it("normalizes precondition failures to a conflict error", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 409,
-    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 409 }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(

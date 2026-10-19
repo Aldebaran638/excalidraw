@@ -76,6 +76,7 @@
     "test:typecheck": "tsc",
     "test:widgets:browser": "node excalidraw-app/tests/widgets-redesign.cjs",
     "test:widgets:production": "node excalidraw-app/tests/widgets-production.cjs",
+    "test:chat:browser": "node excalidraw-app/tests/note-chat-browser.cjs",
     "test:update": "yarn test:app --update --watch=false",
     "test": "yarn test:app",
     "test:coverage": "vitest --coverage",

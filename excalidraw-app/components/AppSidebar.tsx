@@ -2,11 +2,15 @@ import { DefaultSidebar, Sidebar, THEME } from "@excalidraw/excalidraw";
 import {
   messageCircleIcon,
   presentationIcon,
+  MagicIconThin,
 } from "@excalidraw/excalidraw/components/icons";
 import { LinkButton } from "@excalidraw/excalidraw/components/LinkButton";
 import { useUIAppState } from "@excalidraw/excalidraw/context/ui-appState";
 
 import "./AppSidebar.scss";
+import { NoteChatPanel } from "./NoteChatPanel";
+
+import type { NoteChatController } from "../data/noteChats";
 
 type SidebarPromoCopyProps = {
   text: string;
@@ -65,12 +69,23 @@ const SidebarPromoCopy = (props: SidebarPromoCopyProps) => {
   );
 };
 
-export const AppSidebar = () => {
+export const AppSidebar = ({ chats }: { chats: NoteChatController | null }) => {
   const { theme, openSidebar } = useUIAppState();
 
   return (
-    <DefaultSidebar>
+    <DefaultSidebar
+      className={
+        openSidebar?.tab === "note-chat" ? "note-chat-sidebar" : undefined
+      }
+    >
       <DefaultSidebar.TabTriggers>
+        <Sidebar.TabTrigger
+          tab="note-chat"
+          title="笔记聊天"
+          aria-label="笔记聊天"
+        >
+          {MagicIconThin}
+        </Sidebar.TabTrigger>
         <Sidebar.TabTrigger
           tab="comments"
           style={{ opacity: openSidebar?.tab === "comments" ? 1 : 0.4 }}
@@ -84,6 +99,9 @@ export const AppSidebar = () => {
           {presentationIcon}
         </Sidebar.TabTrigger>
       </DefaultSidebar.TabTriggers>
+      <Sidebar.Tab tab="note-chat">
+        {chats && <NoteChatPanel controller={chats} />}
+      </Sidebar.Tab>
       <Sidebar.Tab tab="comments">
         <div className="app-sidebar-promo-container">
           <div

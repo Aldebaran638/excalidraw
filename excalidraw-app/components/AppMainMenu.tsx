@@ -6,6 +6,7 @@ import {
   save,
   saveAs,
   abacusIcon,
+  MagicIconThin,
 } from "@excalidraw/excalidraw/components/icons";
 import { useI18n } from "@excalidraw/excalidraw/i18n";
 import { MainMenu } from "@excalidraw/excalidraw/index";
@@ -29,6 +30,7 @@ export const AppMainMenu: React.FC<{
   onSaveRepository: () => void;
   onSaveRepositoryAs: () => void;
   onOpenRepository: () => void;
+  onOpenNoteChat: () => void;
   onInsertMatrix: () => void;
 }> = React.memo((props) => {
   const { t } = useI18n();
@@ -44,6 +46,9 @@ export const AppMainMenu: React.FC<{
       </MainMenu.Item>
       <MainMenu.Item icon={LoadIcon} onSelect={props.onOpenRepository}>
         Open repository note
+      </MainMenu.Item>
+      <MainMenu.Item icon={MagicIconThin} onSelect={props.onOpenNoteChat}>
+        笔记聊天
       </MainMenu.Item>
       <MainMenu.Item icon={abacusIcon} onSelect={props.onInsertMatrix}>
         Insert matrix

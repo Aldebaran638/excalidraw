@@ -974,6 +974,42 @@ export const useAIWidgets = ({
       )
     : null;
   return {
+    captureChatSnapshot: () => ({
+      capturedAt: Date.now(),
+      elements: (api?.getSceneElements() || []).map((element) => {
+        const copy = structuredClone(element);
+        const runtime = runtimes.current.get(element.id);
+        if (runtime && copy.customData?.aiWidget) {
+          copy.customData.aiWidget = {
+            ...copy.customData.aiWidget,
+            state: structuredClone(runtime.runtime.state),
+          };
+        }
+        // Files and preview candidates are deliberately not part of this snapshot.
+        const value = copy as unknown as Record<string, unknown>;
+        return {
+          ...Object.fromEntries(
+            [
+              "id",
+              "type",
+              "x",
+              "y",
+              "width",
+              "height",
+              "text",
+              "originalText",
+              "groupIds",
+              "matrix",
+            ]
+              .filter((key) => Object.hasOwn(value, key))
+              .map((key) => [key, value[key]]),
+          ),
+          customData: copy.customData?.aiWidget
+            ? { aiWidget: copy.customData.aiWidget }
+            : undefined,
+        };
+      }),
+    }),
     session,
     prompt,
     setPrompt,

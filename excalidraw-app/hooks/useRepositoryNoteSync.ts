@@ -15,11 +15,16 @@ import type {
 
 import {
   createTimestampedRepositoryNoteName,
+  normalizeRepositoryNoteName,
   loadRepositoryNote,
   saveRepositoryNote,
   serializeRepositoryNote,
   subscribeToRepositoryNoteChanges,
 } from "../data/repositoryNotes";
+
+import { readMetadata } from "../data/noteIdentity";
+
+import type { RepositoryMetadata } from "../data/noteIdentity";
 
 const STORAGE_KEY = "aldebaran.repository-note-name";
 const CLIENT_ID_STORAGE_KEY = "aldebaran.repository-note-client-id";
@@ -60,6 +65,8 @@ export const useRepositoryNoteSync = ({
   >(null);
   const [status, setStatus] = useState<RepositorySyncStatus>("unbound");
   const [documentSession, setDocumentSession] = useState(0);
+  const [repositoryNoteId, setRepositoryNoteId] = useState<string | null>(null);
+  const metadataRef = useRef<RepositoryMetadata | null>(null);
   const nameRef = useRef<string | null>(null);
   const revisionRef = useRef<string | null>(null);
   const readyRef = useRef(false);
@@ -130,11 +137,18 @@ export const useRepositoryNoteSync = ({
       applyingRemoteRef.current = true;
       try {
         const data = await loadRepositoryNote(name);
+        metadataRef.current = data.metadata;
+        setRepositoryNoteId(data.metadata?.noteId || null);
         const currentAppState = excalidrawAPI.getAppState();
         const restoredAppState = restoreAppState(
           data.appState,
           currentAppState,
         );
+        // Chat is application chrome, not a document property. Loading a note
+        // must not close its conversations or interrupt their background streams.
+        if (currentAppState.openSidebar?.tab === "note-chat") {
+          restoredAppState.openSidebar = currentAppState.openSidebar;
+        }
         excalidrawAPI.updateScene({
           elements: restoreElements(data.elements, null, {
             repairBindings: true,
@@ -154,6 +168,7 @@ export const useRepositoryNoteSync = ({
             ? currentAppState
             : { ...currentAppState, ...restoredAppState },
           excalidrawAPI.getFiles(),
+          metadataRef.current,
         );
         queuedContentRef.current = null;
         revisionRef.current = data.revision;
@@ -177,9 +192,15 @@ export const useRepositoryNoteSync = ({
   );
 
   const performSaveSnapshot = useCallback(
-    async (snapshot: SceneSnapshot, explicitName?: string) => {
+    async (
+      snapshot: SceneSnapshot,
+      explicitName?: string,
+      generation = saveGenerationRef.current,
+    ) => {
       const isAutomaticCreate = !explicitName && !nameRef.current;
-      let targetName = explicitName || nameRef.current;
+      let targetName = explicitName
+        ? normalizeRepositoryNoteName(explicitName)
+        : nameRef.current;
       for (let attempt = 0; attempt < 4; attempt++) {
         if (!targetName) {
           targetName = createTimestampedRepositoryNoteName(
@@ -188,6 +209,29 @@ export const useRepositoryNoteSync = ({
         }
         setStatus("syncing");
         try {
+          // Save As owns the target's identity, never the source's chat history.
+          let metadata = metadataRef.current;
+          if (explicitName && targetName !== nameRef.current) {
+            if (!ownerWindow) {
+              throw new Error("编辑器尚未准备好");
+            }
+            const target = await ownerWindow.fetch(
+              `/api/notes/${encodeURIComponent(targetName)}`,
+            );
+            if (target.status === 404) {
+              metadata = null;
+            } else if (!target.ok) {
+              throw new Error("无法确认目标笔记身份，未覆盖文件");
+            } else {
+              metadata = readMetadata((await target.json()).repositoryMetadata);
+            }
+          }
+          const serialized = JSON.parse(snapshot.serializedContent);
+          delete serialized.repositoryMetadata;
+          if (metadata) {
+            serialized.repositoryMetadata = metadata;
+          }
+          const serializedContent = JSON.stringify(serialized, null, 2);
           const result = await saveRepositoryNote(
             targetName,
             snapshot.elements,
@@ -198,11 +242,18 @@ export const useRepositoryNoteSync = ({
                 targetName === nameRef.current ? revisionRef.current : null,
               createOnly: isAutomaticCreate,
               clientId: getRepositoryClientId(),
-              serializedContent: snapshot.serializedContent,
+              serializedContent,
             },
           );
+          // The write may finish after another document was opened. Persisting
+          // its original file is valid; rebinding the new canvas is not.
+          if (generation !== saveGenerationRef.current) {
+            return undefined;
+          }
           revisionRef.current = result.revision;
-          lastPersistedContentRef.current = snapshot.serializedContent;
+          metadataRef.current = metadata;
+          setRepositoryNoteId(metadata?.noteId || null);
+          lastPersistedContentRef.current = serializedContent;
           if (queuedContentRef.current === snapshot.serializedContent) {
             queuedContentRef.current = null;
           }
@@ -210,6 +261,13 @@ export const useRepositoryNoteSync = ({
           setStatus(queuedContentRef.current ? "pending" : "synced");
           return result.name;
         } catch (error) {
+          if (generation !== saveGenerationRef.current) {
+            excalidrawAPI?.setToast({
+              message: `上一个笔记 ${targetName} 保存失败，请重新打开核对。当前笔记绑定未改变。`,
+              duration: 5000,
+            });
+            return undefined;
+          }
           if (
             isAutomaticCreate &&
             error instanceof Error &&
@@ -233,7 +291,7 @@ export const useRepositoryNoteSync = ({
       setStatus("error");
       throw new Error("Unable to create a unique repository note name");
     },
-    [getRepositoryClientId, setRepositoryNoteName],
+    [getRepositoryClientId, setRepositoryNoteName, ownerWindow, excalidrawAPI],
   );
 
   // Serialize all writes. A debounced autosave and an explicit Save/Save As
@@ -253,7 +311,7 @@ export const useRepositoryNoteSync = ({
           }
           return undefined;
         }
-        return performSaveSnapshot(snapshot, explicitName);
+        return performSaveSnapshot(snapshot, explicitName, generation);
       });
       const completedSave = nextSave.finally(() => {
         scheduledContentsRef.current = scheduledContentsRef.current.filter(
@@ -304,6 +362,7 @@ export const useRepositoryNoteSync = ({
         elements,
         appState,
         files,
+        metadataRef.current,
       );
       if (
         serializedContent === lastPersistedContentRef.current &&
@@ -345,7 +404,12 @@ export const useRepositoryNoteSync = ({
       elements,
       appState,
       files,
-      serializedContent: serializeRepositoryNote(elements, appState, files),
+      serializedContent: serializeRepositoryNote(
+        elements,
+        appState,
+        files,
+        metadataRef.current,
+      ),
     });
   }, [debouncedSave, excalidrawAPI, saveSnapshot]);
 
@@ -363,7 +427,12 @@ export const useRepositoryNoteSync = ({
           elements,
           appState,
           files,
-          serializedContent: serializeRepositoryNote(elements, appState, files),
+          serializedContent: serializeRepositoryNote(
+            elements,
+            appState,
+            files,
+            metadataRef.current,
+          ),
         },
         name,
       );
@@ -382,8 +451,61 @@ export const useRepositoryNoteSync = ({
   );
 
   const flush = useCallback(() => debouncedSave.flush(), [debouncedSave]);
+  const ensureNoteIdentity = useCallback(
+    async (fork = false) => {
+      if (externalUpdateRef.current) {
+        throw new Error("请先处理本地笔记冲突");
+      }
+      if (!availableRef.current) {
+        throw new Error("本地笔记服务不可用");
+      }
+      const generation = saveGenerationRef.current;
+      await saveQueueRef.current;
+      if (generation !== saveGenerationRef.current) {
+        throw new Error("笔记已切换，请重试");
+      }
+      if (
+        !fork &&
+        metadataRef.current?.noteId === repositoryNoteId &&
+        repositoryNoteId &&
+        nameRef.current
+      ) {
+        return { noteId: repositoryNoteId, name: nameRef.current };
+      }
+      if (fork || !metadataRef.current) {
+        metadataRef.current = { version: 1, noteId: randomId() };
+      }
+      const expectedId = metadataRef.current.noteId;
+      const name = await saveCurrent();
+      if (!name || metadataRef.current?.noteId !== expectedId) {
+        throw new Error("笔记已切换，请重新创建会话");
+      }
+      return { noteId: expectedId, name };
+    },
+    [saveCurrent, repositoryNoteId],
+  );
 
   useEffect(() => () => debouncedSave.cancel(), [debouncedSave]);
+  useEffect(
+    () =>
+      excalidrawAPI?.onEvent("document:replace", () => {
+        if (applyingRemoteRef.current) {
+          return;
+        }
+        saveGenerationRef.current++;
+        debouncedSave.cancel();
+        metadataRef.current = null;
+        setRepositoryNoteId(null);
+        revisionRef.current = null;
+        snapshotRef.current = null;
+        queuedContentRef.current = null;
+        lastPersistedContentRef.current = null;
+        setRepositoryNoteName(null);
+        setDocumentSession((value) => value + 1);
+        setStatus("unbound");
+      }),
+    [excalidrawAPI, debouncedSave, setRepositoryNoteName],
+  );
 
   useEffect(() => {
     if (!excalidrawAPI || !ownerWindow || readyRef.current) {
@@ -523,6 +645,8 @@ export const useRepositoryNoteSync = ({
     open,
     queueSceneSave,
     repositoryNoteName,
+    repositoryNoteId,
+    ensureNoteIdentity,
     documentSession,
     saveAs,
     saveCurrent,
