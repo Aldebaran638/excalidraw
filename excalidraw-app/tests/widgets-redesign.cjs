@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const puppeteer = require("puppeteer-core");
-const base = process.env.APP_URL || "http://127.0.0.1:3001";
+const base = process.env.APP_URL || "http://127.0.0.1:3009";
 const filename = `__widget-redesign-${Date.now()}.excalidraw`;
 const url = `${base}/api/notes/${filename}`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
