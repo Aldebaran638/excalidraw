@@ -24,8 +24,8 @@
 ```sh
 yarn test:typecheck
 yarn vitest run packages/interactive-widgets/widgets.test.ts packages/excalidraw/tests/embeddableControls.test.tsx excalidraw-app/tests/services.test.ts --minWorkers=1 --maxWorkers=2
-BROWSER_EXECUTABLE=/path/to/chromium APP_URL=http://127.0.0.1:3003 yarn test:widgets:browser
-TEST_REAL_QWEN=true BROWSER_EXECUTABLE=/path/to/chromium APP_URL=http://127.0.0.1:3003 yarn test:widgets:browser
+BROWSER_EXECUTABLE=/path/to/chromium APP_URL=http://127.0.0.1:3009 yarn test:widgets:browser
+TEST_REAL_QWEN=true BROWSER_EXECUTABLE=/path/to/chromium APP_URL=http://127.0.0.1:3009 yarn test:widgets:browser
 yarn build:production
 ```
 

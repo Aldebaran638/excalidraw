@@ -4,6 +4,32 @@ import { describe, expect, it, vi } from "vitest";
 import { NoteChatMarkdown } from "../components/NoteChatMarkdown";
 
 describe("safe note chat Markdown", () => {
+  it("renders the model's valid tool table as safe semantic cells, including streaming prefixes", () => {
+    const content =
+      "| 工具 | 功能 |\n|:------|------:|\n| `get_note_outline` | 分页读取画布的大纲、标签和分组 ID |\n| `search_note` | 搜索关键词 |\n| `read_note_elements` | 读取元素详情 |";
+    const { container, rerender } = render(
+      <NoteChatMarkdown content={content} />,
+    );
+    expect(container.querySelectorAll("thead th")).toHaveLength(2);
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(3);
+    expect(container.querySelector("td code")?.textContent).toBe(
+      "get_note_outline",
+    );
+    expect(container.querySelector("th")?.style.textAlign).toBe("left");
+    expect(container.querySelectorAll("th")[1].style.textAlign).toBe("right");
+    for (const length of [4, 21, 30, 70, content.length]) {
+      rerender(<NoteChatMarkdown content={content.slice(0, length)} />);
+      expect(container.querySelector("script,img,iframe")).toBeNull();
+    }
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(3);
+    rerender(
+      <NoteChatMarkdown
+        content={"| 输入 |\n|---|\n| <img src=x onerror=alert(1)> |"}
+      />,
+    );
+    expect(container.querySelector("table")).not.toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+  });
   it("renders Chinese, long text, lists and code without active HTML, links or remote images", () => {
     const content = `# 中文标题\n\n${"长文本".repeat(
       1000,

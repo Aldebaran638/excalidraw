@@ -119,6 +119,16 @@ export class ChatStore {
             !validId(message.turnId) ||
             !["user", "assistant"].includes(message.role) ||
             typeof message.content !== "string" ||
+            (message.artifacts !== undefined &&
+              (!Array.isArray(message.artifacts) ||
+                message.artifacts.some(
+                  (ref) =>
+                    !ref ||
+                    !validId(ref.artifactId) ||
+                    !Number.isSafeInteger(ref.version) ||
+                    ref.version < 1 ||
+                    typeof ref.title !== "string",
+                ))) ||
             ![
               "generating",
               "complete",

@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CaptureUpdateAction } from "@excalidraw/excalidraw";
 import { cacheEmbeddableSnapshot } from "@excalidraw/excalidraw/scene/embeddableSnapshots";
-import {
-  newElement,
-  newElementWith,
-  newEmbeddableElement,
-} from "@excalidraw/element";
+import { newElement, newElementWith } from "@excalidraw/element";
 import {
   viewportCoordsToSceneCoords,
   sceneCoordsToViewportCoords,
@@ -35,9 +31,12 @@ import {
   validateDefinition,
 } from "../../packages/interactive-widgets/schema";
 import { renderSnapshot } from "../../packages/interactive-widgets/snapshot";
+import { widgetMetadata, commitWidgetScene } from "../data/widgetScene";
+
 import { WidgetView } from "../../packages/interactive-widgets/WidgetView";
 import { WidgetRuntimeState } from "../../packages/interactive-widgets/runtimeState";
-import { WIDGET_LINK_PREFIX } from "../../packages/interactive-widgets/types";
+
+import type { ChatWidgetHost, ChatWidgetVersion } from "../data/chatWidgets";
 
 import type { WidgetDraft } from "../data/widgetDrafts";
 
@@ -58,21 +57,6 @@ type Session = {
 };
 export const isWidgetElement = (el: ExcalidrawElement) =>
   el.type === "embeddable" && Boolean(el.customData?.aiWidget);
-export const widgetMetadata = (
-  doc: WidgetDocument,
-  width: number,
-  height: number,
-  scroll = 0,
-) => ({
-  aiWidget: doc,
-  embeddable: {
-    contentLocked: true,
-    interaction: "controls",
-    snapshot: renderSnapshot(doc, width, height, scroll),
-    snapshotWidth: width,
-    snapshotHeight: height,
-  },
-});
 
 export const useAIWidgets = ({
   api,
@@ -121,6 +105,17 @@ export const useAIWidgets = ({
     useState<NonDeleted<ExcalidrawEmbeddableElement> | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const controller = useRef<AbortController | null>(null);
+  const placement = useRef<{
+    data: ChatWidgetVersion;
+    document: WidgetDocument;
+    isCurrent: () => boolean;
+    done: (id: string | null) => void;
+  } | null>(null);
+  const cancelPlacement = useCallback(() => {
+    const pending = placement.current;
+    placement.current = null;
+    pending?.done(null);
+  }, []);
   const dirty = useRef(new Set<string>());
   const scrolls = useRef(new Map<string, number>());
   const tableScrolls = useRef(new Map<string, WidgetScrollState>());
@@ -287,6 +282,7 @@ export const useAIWidgets = ({
   useEffect(
     () =>
       api?.onEvent("document:replace", () => {
+        cancelPlacement();
         if (pendingDraft.current && draftStorage.current) {
           void saveWidgetDraft(
             draftStorage.current,
@@ -299,7 +295,7 @@ export const useAIWidgets = ({
         setExpanded(null);
         draftKey.current = null;
       }),
-    [api, cancel],
+    [api, cancel, cancelPlacement],
   );
   const previousDocument = useRef(documentSession);
   useEffect(() => {
@@ -352,6 +348,32 @@ export const useAIWidgets = ({
       }),
     [api],
   );
+  useEffect(() => {
+    cancelPlacement();
+  }, [documentSession, cancelPlacement]);
+  useEffect(() => {
+    if (!ownerWindow) {
+      return;
+    }
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && placement.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelPlacement();
+        api?.updateScene({
+          appState: { selectionElement: null },
+          captureUpdate: CaptureUpdateAction.NEVER,
+        });
+        api?.setActiveTool({ type: "selection" });
+        api?.toggleSidebar({ name: "default", tab: "note-chat", force: true });
+      }
+    };
+    ownerWindow.addEventListener("keydown", key, true);
+    return () => {
+      ownerWindow.removeEventListener("keydown", key, true);
+      cancelPlacement();
+    };
+  }, [api, ownerWindow, cancelPlacement]);
   useEffect(() => {
     if (!api || !ownerWindow) {
       return;
@@ -466,7 +488,15 @@ export const useAIWidgets = ({
     }
     let cleanRegion: (() => void) | null = null;
     const unsubscribe = api.onPointerDown((tool, pointer, event) => {
-      if (tool.type !== "custom" || tool.customType !== "ai-widget") {
+      if (
+        tool.type !== "custom" ||
+        !["ai-widget", "ai-widget-chat-import"].includes(tool.customType)
+      ) {
+        return;
+      }
+      const importing =
+        tool.customType === "ai-widget-chat-import" ? placement.current : null;
+      if (tool.customType === "ai-widget-chat-import" && !importing) {
         return;
       }
       cleanRegion?.();
@@ -480,6 +510,10 @@ export const useAIWidgets = ({
         height: 0,
       });
       const move = (ev: PointerEvent) => {
+        if (importing && placement.current !== importing) {
+          abort();
+          return;
+        }
         end = viewportCoordsToSceneCoords(ev, api.getAppState());
         api.updateScene({
           appState: {
@@ -502,6 +536,9 @@ export const useAIWidgets = ({
         cleanRegion = null;
       };
       const abort = () => {
+        if (importing) {
+          cancelPlacement();
+        }
         cleanup();
         api.updateScene({
           appState: { selectionElement: null },
@@ -515,6 +552,10 @@ export const useAIWidgets = ({
         }
       };
       const up = (ev: PointerEvent) => {
+        if (importing && placement.current !== importing) {
+          cleanup();
+          return;
+        }
         move(ev);
         cleanup();
         api.updateScene({
@@ -525,6 +566,44 @@ export const useAIWidgets = ({
         const width = Math.abs(end.x - origin.x);
         const height = Math.abs(end.y - origin.y);
         if (width < 20 || height < 20) {
+          if (importing) {
+            cancelPlacement();
+          }
+          return;
+        }
+        if (importing) {
+          placement.current = null;
+          if (!importing.isCurrent()) {
+            importing.done(null);
+            return;
+          }
+          try {
+            const { data, document } = importing;
+            const result = commitWidgetScene(api, {
+              document,
+              region: {
+                x: Math.min(origin.x, end.x),
+                y: Math.min(origin.y, end.y),
+                width,
+                height,
+              },
+              source: {
+                noteId: data.noteId,
+                sessionId: data.sessionId,
+                artifactId: data.artifactId,
+                version: data.version,
+              },
+            });
+            importing.done(result.id);
+            api.toggleSidebar({
+              name: "default",
+              tab: "note-chat",
+              force: true,
+            });
+          } catch (error) {
+            importing.done(null);
+            api.setToast({ message: (error as Error).message });
+          }
           return;
         }
         cancel();
@@ -558,7 +637,7 @@ export const useAIWidgets = ({
       cleanRegion?.();
       unsubscribe();
     };
-  }, [api, ownerWindow, cancel]);
+  }, [api, ownerWindow, cancel, cancelPlacement]);
 
   const commitState = useCallback(
     (id: string, state: WidgetState) => {
@@ -604,82 +683,26 @@ export const useAIWidgets = ({
         setError("目标笔记已变化，请重新生成。");
         return;
       }
-      const elements = api.getSceneElementsIncludingDeleted();
-      const old = active.target
-        ? elements.find((e) => e.id === active.target && !e.isDeleted)
-        : null;
-      const oldDocument = readWidget(old?.customData?.aiWidget);
-      if (
-        active.target &&
-        (!old ||
-          JSON.stringify(oldDocument?.definition) !==
-            JSON.stringify(active.definition))
-      ) {
-        setError("组件定义已变化，请重新生成后应用。");
-        return;
-      }
-      const reconciled = reconcileState(
-        oldDocument && active.target
-          ? {
-              ...oldDocument,
-              state:
-                runtimes.current.get(active.target)?.runtime.state ||
-                oldDocument.state,
-            }
-          : oldDocument,
-        document.definition,
-      );
-      const next: WidgetDocument = {
-        ...document,
-        version: 2,
-        catalogVersion: 2,
-        definition: { ...document.definition, version: 2 },
-        state:
-          oldDocument && !applyTrialInputs ? reconciled.state : document.state,
-      };
-      const region = active.region;
-      let metadata: ReturnType<typeof widgetMetadata>;
+      let result: ReturnType<typeof commitWidgetScene>;
       try {
-        metadata = widgetMetadata(next, region.width, region.height);
+        result = commitWidgetScene(api, {
+          document,
+          region: active.region,
+          target: active.target,
+          baseDefinition: active.definition,
+          liveState: active.target
+            ? runtimes.current.get(active.target)?.runtime.state
+            : undefined,
+          trialInputs: applyTrialInputs,
+          resizeTarget: true,
+        });
       } catch (error) {
-        setError(`候选无法应用：${(error as Error).message}`);
+        setError((error as Error).message);
         return;
       }
-      if (old) {
-        api.updateScene({
-          elements: elements.map((e) =>
-            e.id === old.id
-              ? newElementWith(e, {
-                  width: region.width,
-                  height: region.height,
-                  customData: { ...e.customData, ...metadata },
-                })
-              : e,
-          ),
-          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-        });
-      } else {
-        const element = newEmbeddableElement({
-          type: "embeddable",
-          ...active.region,
-          strokeColor: "#6366f1",
-          backgroundColor: "#f8f8fc",
-          strokeWidth: 1,
-          roughness: 0,
-          customData: metadata,
-        });
-        const withLink = newElementWith(element, {
-          link: WIDGET_LINK_PREFIX + element.id,
-        });
-        api.updateScene({
-          elements: [...elements, withLink],
-          appState: { selectedElementIds: { [element.id]: true } },
-          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-        });
-      }
-      if (reconciled.reset.length) {
+      if (result.reset.length) {
         api.setToast({
-          message: `已重置不兼容输入: ${reconciled.reset.join("、")}`,
+          message: `已重置不兼容输入: ${result.reset.join("、")}`,
         });
       }
       setSession(null);
@@ -862,7 +885,10 @@ export const useAIWidgets = ({
         e.id === selected.id
           ? newElementWith(e, {
               height,
-              customData: widgetMetadata(doc, selected.width, height),
+              customData: {
+                ...e.customData,
+                ...widgetMetadata(doc, selected.width, height),
+              },
             })
           : e,
       ),
@@ -974,6 +1000,92 @@ export const useAIWidgets = ({
       )
     : null;
   return {
+    chatHost: {
+      elements: () =>
+        (api?.getSceneElements() || []).flatMap((element) => {
+          const doc =
+            element.type === "embeddable"
+              ? readWidget(element.customData?.aiWidget)
+              : null;
+          return doc ? [{ id: element.id, title: doc.definition.title }] : [];
+        }),
+      read: (elementId) => {
+        const element = api
+          ?.getSceneElements()
+          .find((item) => item.id === elementId);
+        const doc =
+          element?.type === "embeddable"
+            ? readWidget(element.customData?.aiWidget)
+            : null;
+        return doc
+          ? {
+              ...doc,
+              state: structuredClone(
+                runtimes.current.get(elementId)?.runtime.state || doc.state,
+              ),
+            }
+          : null;
+      },
+      placements: (source) =>
+        (api?.getSceneElements() || [])
+          .filter((element) => {
+            const origin = element.customData?.aiWidgetChatSource;
+            return (
+              origin?.noteId === source.noteId &&
+              origin?.sessionId === source.sessionId &&
+              origin?.artifactId === source.artifactId &&
+              origin?.version === source.version
+            );
+          })
+          .map((element) => element.id),
+      place: (data, document, isCurrent, done) => {
+        if (!api) {
+          throw new Error("画布尚未就绪");
+        }
+        cancelPlacement();
+        placement.current = { data, document, isCurrent, done };
+        api.setActiveTool({
+          type: "custom",
+          customType: "ai-widget-chat-import",
+        });
+        api.setToast({ message: "在画布拖框放置组件，按 Esc 取消。" });
+      },
+      apply: (data, document, trialInputs) => {
+        if (!api || !data.target) {
+          throw new Error("没有可应用的目标组件");
+        }
+        const target = api
+          .getSceneElements()
+          .find((item) => item.id === data.target!.elementId);
+        if (!target) {
+          throw new Error("目标组件已删除，可将候选导入为新组件。");
+        }
+        const result = commitWidgetScene(api, {
+          document,
+          target: target.id,
+          baseDefinition: data.target.baseDefinition,
+          liveState: runtimes.current.get(target.id)?.runtime.state,
+          trialInputs,
+          region: {
+            x: target.x,
+            y: target.y,
+            width: target.width,
+            height: target.height,
+          },
+          source: {
+            noteId: data.noteId,
+            sessionId: data.sessionId,
+            artifactId: data.artifactId,
+            version: data.version,
+          },
+        });
+        if (result.reset.length) {
+          api.setToast({
+            message: `已重置不兼容输入: ${result.reset.join("、")}`,
+          });
+        }
+      },
+    } as ChatWidgetHost,
     captureChatSnapshot: () => ({
       capturedAt: Date.now(),
       elements: (api?.getSceneElements() || []).map((element) => {

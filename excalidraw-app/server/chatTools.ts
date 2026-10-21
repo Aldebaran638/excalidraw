@@ -39,6 +39,33 @@ export const NOTE_TOOLS = [
     },
   ),
 ];
+export const CHAT_WIDGET_TOOLS = [
+  functionTool(
+    "create_widget_draft",
+    "Create ONE interactive widget draft in this chat using the safe component library. Never inserts into the canvas; user previews and imports manually. Pass a clear design instruction, not code or a definition.",
+    { prompt: { type: "string", maxLength: 12000 } },
+  ),
+  functionTool(
+    "revise_widget_draft",
+    "Create a revised candidate of an existing chat artifact (artifactId, version) OR current-note AI widget (elementId). Never applies changes. If no explicit reference, use current workspace. Ask for clarification if ambiguous.",
+    {
+      prompt: { type: "string", maxLength: 12000 },
+      artifactId: { type: "string" },
+      version: { type: "integer", minimum: 1 },
+      elementId: { type: "string" },
+    },
+  ),
+  functionTool(
+    "read_chat_widget",
+    "Read a page of this chat's widget definition and trial state. Cannot read another session. Use nodeId/cursor for details.",
+    {
+      ...paging,
+      artifactId: { type: "string" },
+      version: { type: "integer", minimum: 1 },
+      nodeId: { type: "string" },
+    },
+  ),
+];
 export const sanitizeSnapshot = (value: unknown): NoteSnapshot => {
   const data = value as NoteSnapshot;
   if (

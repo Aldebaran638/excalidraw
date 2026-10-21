@@ -29,10 +29,12 @@ export const AIWidgetPanel = ({
   widgets: w,
   conflict,
   resolveConflict,
+  onChatEdit,
 }: {
   widgets: ReturnType<typeof useAIWidgets>;
   conflict: string | null;
   resolveConflict: (choice: "discard" | "copy") => Promise<void>;
+  onChatEdit?: (elementId: string) => void;
 }) => {
   const [contentHeight, setContentHeight] = useState(0);
   const [previewExpanded, setPreviewExpanded] = useState(false);
@@ -73,6 +75,11 @@ export const AIWidgetPanel = ({
           <details className="ai-widget-more">
             <summary aria-label="组件更多操作">···</summary>
             <div>
+              {onChatEdit && (
+                <Button onClick={() => onChatEdit(w.selected!.id)}>
+                  在聊天中修改
+                </Button>
+              )}
               <Button onClick={w.expandHeight}>展开完整内容</Button>
               <Button onClick={w.resetSelected}>重置输入</Button>
             </div>

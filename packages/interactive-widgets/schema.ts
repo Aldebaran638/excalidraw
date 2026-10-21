@@ -160,7 +160,38 @@ export const widgetSchema = {
     },
   },
 };
-const validate = new Ajv({ allErrors: true }).compile(widgetSchema);
+const validate = new Ajv({
+  allErrors: true,
+  jsonPointers: true,
+  verbose: true,
+}).compile(widgetSchema);
+export class WidgetDefinitionError extends Error {
+  constructor(public issues: string[]) {
+    super(`组件格式不正确:\n${issues.join("\n")}`);
+  }
+}
+const describeIssue = (error: Ajv.ErrorObject): string => {
+  // AJV may shorten schemaPath inside a referenced definition. Use its resolved
+  // parent schema, never error.data (which contains private model output).
+  const schema = error.parentSchema as
+    | { properties?: Record<string, unknown>; enum?: unknown[] }
+    | undefined;
+  const params = error.params as Record<string, unknown>;
+  const location = error.dataPath || "/";
+  if (error.keyword === "additionalProperties") {
+    return `${location}: 不支持属性 ${JSON.stringify(
+      params.additionalProperty,
+    )}；允许属性：${Object.keys(schema?.properties || {}).join(", ") || "无"}`;
+  }
+  if (error.keyword === "required") {
+    return `${location}: 缺少必填属性 ${JSON.stringify(
+      params.missingProperty,
+    )}`;
+  }
+  return `${location}: ${error.message}; constraints=${JSON.stringify(
+    error.keyword === "enum" ? { allowedValues: schema?.enum } : params,
+  )}`;
+};
 const forbidden = new Set(["__proto__", "prototype", "constructor"]);
 const identifier = /^[a-zA-Z][a-zA-Z0-9_-]{0,79}$/;
 export const walkNodes = (root: WidgetNode): WidgetNode[] => [
@@ -215,12 +246,28 @@ export const validateDefinition = (input: unknown): WidgetDefinition => {
   };
   inspect(input, 0);
   if (!validate(input)) {
-    throw new Error(
-      `组件格式不正确: ${validate.errors
-        ?.slice(0, 5)
-        .map((e) => `${e.dataPath} ${e.message}`)
-        .join("; ")}`,
-    );
+    const errors = (validate.errors || []).filter((error) => {
+      // For a tagged expression, avoid contradictory errors from the other
+      // oneOf branches (e.g. suggesting removal of `op` to match a literal).
+      const required = (error.parentSchema as { required?: string[] })
+        ?.required;
+      const data = error.data;
+      const tag =
+        data && typeof data === "object"
+          ? ["op", "ref", "literal"].find((key) => Object.hasOwn(data, key))
+          : undefined;
+      return (
+        !tag ||
+        !required?.some((key) => ["op", "ref", "literal"].includes(key)) ||
+        required.includes(tag)
+      );
+    });
+    throw new WidgetDefinitionError([
+      ...errors.slice(0, 50).map(describeIssue),
+      ...(errors.length > 50
+        ? [`另有 ${errors.length - 50} 项错误，请修复后重新校验。`]
+        : []),
+    ]);
   }
   const def = input as WidgetDefinition;
   const nodes = walkNodes(def.root);

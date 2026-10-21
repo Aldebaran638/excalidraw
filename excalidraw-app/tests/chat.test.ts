@@ -69,6 +69,82 @@ const choice = (delta: object, finish_reason: string | null = null) => ({
   choices: [{ delta, finish_reason }],
 });
 describe("note-owned chat", () => {
+  it.each([false, true])(
+    "forwards thinking=%s and streams reasoning separately from answers",
+    async (thinking) => {
+      const { dir, noteId } = await fixture();
+      const transport = vi.fn(async (_url, options) => {
+        const request = JSON.parse(options!.body as string);
+        expect(request.chat_template_kwargs.enable_thinking).toBe(thinking);
+        return stream([
+          ...(thinking
+            ? [
+                choice({ reasoning_content: "计算步骤" }),
+                choice({ reasoning_content: "已完成" }),
+              ]
+            : []),
+          choice({ content: "结果391" }),
+          choice({}, "stop"),
+        ]);
+      }) as typeof fetch;
+      const service = await createChatService(
+        dir,
+        { baseUrl: "http://fixture", model: "qwen3.8-27b" },
+        transport,
+      );
+      cleanups.push(service.close);
+      const base = `${await serve(service.handle)}/api/notes/${noteId}/chats`;
+      const session = (await (
+        await fetch(base, { method: "POST" })
+      ).json()) as ChatSession;
+      const response = await fetch(`${base}/${session.id}/turns`, {
+        method: "POST",
+        body: JSON.stringify({
+          turnId: randomUUID(),
+          content: "17乘23",
+          revision: 0,
+          thinking,
+          snapshot: { capturedAt: Date.now(), elements: [] },
+        }),
+      });
+      const events: ChatEvent[] = [];
+      for await (const frame of readSSE(response.body!)) {
+        events.push(JSON.parse(frame.data));
+      }
+      expect(
+        events
+          .filter((event) => event.type === "delta")
+          .map((event) => event.delta)
+          .join(""),
+      ).toBe("结果391");
+      expect(
+        events
+          .filter((event) => event.type === "reasoning")
+          .map((event) => event.delta)
+          .join(""),
+      ).toBe(thinking ? "计算步骤已完成" : "");
+      const stored = (await (
+        await fetch(`${base}/${session.id}`)
+      ).json()) as ChatSession;
+      expect(stored.messages[1].thinking).toBe(thinking);
+      expect(stored.messages[1].reasoning || "").toBe(
+        thinking ? "计算步骤已完成" : "",
+      );
+      expect(stored.messages[1].content).toBe("结果391");
+      expect(events.at(-1)?.saved).toBe(true);
+      const invalid = await fetch(`${base}/${session.id}/turns`, {
+        method: "POST",
+        body: JSON.stringify({
+          turnId: randomUUID(),
+          content: "再算一次",
+          revision: stored.revision,
+          thinking: "true",
+          snapshot: { capturedAt: Date.now(), elements: [] },
+        }),
+      });
+      expect(invalid.status).toBe(400);
+    },
+  );
   it("parses split Chinese UTF-8 and CRLF SSE frames", async () => {
     const events = [];
     for await (const event of readSSE(
@@ -114,6 +190,7 @@ describe("note-owned chat", () => {
     let calls = 0;
     const transport = vi.fn(async (_url, options) => {
       const body = JSON.parse(options!.body as string);
+      expect(body.chat_template_kwargs.enable_thinking).toBe(false);
       if (++calls === 1) {
         expect(JSON.stringify(body.messages)).not.toContain("未保存的答案42");
         return stream([

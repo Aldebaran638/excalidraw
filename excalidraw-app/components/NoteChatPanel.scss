@@ -180,6 +180,213 @@
       white-space: pre;
     }
   }
+  .note-chat-table {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    border: 1px solid var(--color-border-outline-variant);
+    border-radius: 8px;
+    margin: 12px 0;
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    th,
+    td {
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--color-border-outline-variant);
+      min-width: 100px;
+    }
+    th {
+      background: var(--color-surface-high);
+    }
+    code {
+      white-space: nowrap;
+      overflow-wrap: normal;
+      word-break: normal;
+    }
+    tr:last-child td {
+      border-bottom: 0;
+    }
+  }
+  .note-chat-reasoning {
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    border-left: 2px solid var(--color-border-outline-variant);
+    color: var(--color-on-surface-variant);
+    font-size: 12px;
+    summary {
+      cursor: pointer;
+    }
+    > div {
+      white-space: pre-wrap;
+      margin-top: 8px;
+    }
+  }
+  .note-chat-thinking {
+    min-height: 36px;
+    padding: 6px 10px;
+    border: 1px solid var(--color-border-outline-variant);
+    border-radius: 8px;
+    background: var(--color-surface-lowest);
+    color: var(--color-on-surface-variant);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    &[aria-pressed="true"] {
+      color: var(--color-primary);
+      border-color: var(--color-primary);
+      background: var(--color-surface-high);
+    }
+  }
+  .note-chat-widget {
+    margin: 14px 0;
+    border: 1px solid var(--color-border-outline-variant);
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--color-surface-lowest);
+    > p,
+    > small {
+      display: block;
+      padding: 0 12px;
+    }
+  }
+  .note-chat-widget-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    min-height: 44px;
+    padding: 10px 12px;
+    text-align: left;
+    border: 0;
+    background: var(--color-surface-high);
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    span {
+      font-weight: 600;
+    }
+    small {
+      flex-shrink: 0;
+      color: var(--color-on-surface-variant);
+      font-size: 11px;
+    }
+  }
+  .note-chat-widget-meta,
+  .note-chat-widget-actions,
+  .note-chat-widget-compare {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .note-chat-widget-meta {
+    font-size: 11px;
+    color: var(--color-on-surface-variant);
+    select {
+      max-width: 100%;
+      min-width: 0;
+      font: inherit;
+      background: var(--color-surface-lowest);
+      color: inherit;
+      border: 1px solid var(--color-border-outline-variant);
+      border-radius: 6px;
+      padding: 4px;
+    }
+  }
+  .note-chat-widget-summary {
+    font-size: 12px;
+    margin: 0 0 8px;
+  }
+  .note-chat-widget-view {
+    overflow: auto;
+    overscroll-behavior: contain;
+    border-block: 1px solid var(--color-border-outline-variant);
+    .iw-view {
+      min-height: 0;
+    }
+  }
+  .note-chat-widget-compare button {
+    padding: 5px 12px;
+    border: 1px solid var(--color-border-outline-variant);
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    &[aria-pressed="true"] {
+      color: var(--color-primary);
+      background: var(--color-surface-high);
+    }
+  }
+  .note-chat-widget-apply {
+    padding: 10px 12px;
+    border-top: 1px solid var(--color-border-outline-variant);
+    font-size: 12px;
+    label {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    p {
+      margin: 0 0 8px;
+    }
+  }
+  .note-chat-widget-phase {
+    margin: 0;
+    padding: 8px 16px;
+    font-size: 12px;
+    color: var(--color-on-surface-variant);
+  }
+  .note-chat-workspace {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    margin-bottom: 8px;
+    border-radius: 8px;
+    background: var(--color-surface-high);
+    font-size: 12px;
+    span {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    button {
+      min-width: 32px;
+      min-height: 32px;
+      border: 0;
+      color: inherit;
+      background: transparent;
+      cursor: pointer;
+    }
+  }
+  .note-chat-reference {
+    font-size: 12px;
+    margin-bottom: 8px;
+    color: var(--color-on-surface-variant);
+    summary {
+      cursor: pointer;
+    }
+    select {
+      width: 100%;
+      margin-top: 6px;
+      padding: 6px;
+      border-radius: 6px;
+      border: 1px solid var(--color-border-outline-variant);
+      background: var(--color-surface-lowest);
+      color: inherit;
+    }
+  }
   .note-chat-reading {
     font-size: 12px;
     color: var(--color-on-surface-variant);
@@ -196,11 +403,22 @@
       margin-left: 5px;
       font-size: 10px;
     }
+    .note-chat-tool-details {
+      margin: 6px 0;
+      pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 240px;
+        overflow-y: auto;
+        font-size: 11px;
+        line-height: 1.6;
+      }
+    }
   }
   .note-chat-latest {
     align-self: center;
-    position: absolute;
-    bottom: 190px;
+    position: static;
+    margin: 4px 0;
     box-shadow: 0 2px 12px #0002;
     background: var(--color-surface-lowest);
   }
@@ -285,6 +503,15 @@
     gap: 8px;
   }
 }
+.note-chat-widget-expanded {
+  padding: 12px;
+  .note-chat-widget-view {
+    overflow: auto;
+  }
+  > button {
+    margin-top: 12px;
+  }
+}
 .excalidraw .note-chat-dialog .excalidraw-button {
   width: auto;
   height: auto;
@@ -303,11 +530,27 @@
   }
   .excalidraw .note-chat {
     .excalidraw-button,
+    .note-chat-thinking,
     select {
       min-height: 44px;
     }
     .note-chat-empty {
       padding-top: 20px;
+    }
+    .note-chat-composer textarea {
+      height: 64px;
+      min-height: 56px;
+    }
+    .note-chat-header {
+      padding-block: 10px 8px;
+    }
+    .note-chat-session-row {
+      padding-bottom: 8px;
+    }
+    .note-chat-widget-compare button,
+    .note-chat-workspace button {
+      min-height: 44px;
+      min-width: 44px;
     }
   }
 }

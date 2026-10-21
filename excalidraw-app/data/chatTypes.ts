@@ -1,3 +1,5 @@
+import type { ChatWidgetRef } from "./chatWidgets";
+
 export type ChatStatus =
   | "generating"
   | "complete"
@@ -11,12 +13,16 @@ export type ChatActivity = {
   elementIds: string[];
   snapshotAt: number;
   summary?: string;
+  details?: string;
 };
 export type ChatMessage = {
   id: string;
   turnId: string;
   role: "user" | "assistant";
   content: string;
+  thinking?: boolean;
+  reasoning?: string;
+  artifacts?: ChatWidgetRef[];
   createdAt: number;
   status: ChatStatus;
   activities?: ChatActivity[];
@@ -41,7 +47,17 @@ export type NoteSnapshot = {
   elements: Record<string, unknown>[];
 };
 export type ChatEvent = {
-  type: "start" | "delta" | "tool_start" | "tool_end" | "done" | "error";
+  type:
+    | "start"
+    | "delta"
+    | "reasoning"
+    | "widget_start"
+    | "widget_ready"
+    | "widget_error"
+    | "tool_start"
+    | "tool_end"
+    | "done"
+    | "error";
   noteId: string;
   sessionId: string;
   turnId: string;
@@ -51,4 +67,5 @@ export type ChatEvent = {
   session?: ChatSession;
   error?: string;
   saved?: boolean;
+  artifact?: ChatWidgetRef;
 };

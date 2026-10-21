@@ -27,7 +27,7 @@ corepack yarn test:typecheck
 corepack yarn build:production
 BROWSER_EXECUTABLE=/path/to/chromium corepack yarn test:widgets:browser
 TEST_REAL_QWEN=true BROWSER_EXECUTABLE=/path/to/chromium corepack yarn test:widgets:browser
-APP_URL=http://127.0.0.1:3102 BROWSER_EXECUTABLE=/path/to/chromium corepack yarn test:widgets:production
+APP_URL=http://127.0.0.1:3009 BROWSER_EXECUTABLE=/path/to/chromium corepack yarn test:widgets:production
 ```
 
 The browser acceptance runner targets the development server and creates a uniquely named temporary note, removed on completion. It does not edit user notes. See [DOCKER.md](DOCKER.md) for production configuration. The production runner must target a test server with an isolated temporary notes directory; it leaves a uniquely named fixture there for inspection.

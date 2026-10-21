@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { marked } from "marked";
 
-import type { Token } from "marked";
+import type { Token, Tokens } from "marked";
 import type { ReactNode } from "react";
 
 const Code = ({ text }: { text: string }) => {
@@ -65,6 +65,46 @@ const render = (tokens: Token[], depth = 0): ReactNode =>
             return <Code key={index} text={token.text} />;
           case "codespan":
             return <code key={index}>{token.text}</code>;
+          case "table":
+            return (
+              <div
+                className="note-chat-table"
+                key={index}
+                tabIndex={0}
+                role="region"
+                aria-label="回答中的表格"
+              >
+                <table>
+                  <thead>
+                    <tr>
+                      {token.header.map((cell: Tokens.TableCell, i: number) => (
+                        <th
+                          key={i}
+                          scope="col"
+                          style={{ textAlign: token.align[i] || undefined }}
+                        >
+                          {render(cell.tokens, depth + 1)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {token.rows.map((row: Tokens.TableCell[], i: number) => (
+                      <tr key={i}>
+                        {row.map((cell: Tokens.TableCell, j: number) => (
+                          <td
+                            key={j}
+                            style={{ textAlign: token.align[j] || undefined }}
+                          >
+                            {render(cell.tokens, depth + 1)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
           case "list":
             return token.ordered ? (
               <ol key={index}>

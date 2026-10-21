@@ -516,6 +516,7 @@ const ExcalidrawWrapper = () => {
   if (chats) {
     chats.ensureIdentity = ensureNoteIdentity;
     chats.capture = widgets.captureChatSnapshot;
+    chats.widgetHost = widgets.chatHost;
   }
   useEffect(() => {
     chats?.bind({
@@ -525,6 +526,10 @@ const ExcalidrawWrapper = () => {
     });
   }, [chats, repositoryNoteId, repositoryNoteName, documentSession]);
   useEffect(() => () => chats?.dispose(), [chats]);
+  useEffect(
+    () => excalidrawAPI?.onChange(() => chats?.sceneChanged()),
+    [chats, excalidrawAPI],
+  );
   const openMatrixTool = useCallback(() => {
     excalidrawAPI?.setActiveTool({ type: "matrix" });
   }, [excalidrawAPI]);
@@ -1310,6 +1315,14 @@ const ExcalidrawWrapper = () => {
         <AppSidebar chats={chats} />
         <AIWidgetPanel
           widgets={widgets}
+          onChatEdit={(elementId) => {
+            excalidrawAPI?.toggleSidebar({
+              name: "default",
+              tab: "note-chat",
+              force: true,
+            });
+            void chats?.referenceElement(elementId);
+          }}
           conflict={externalUpdate?.name || null}
           resolveConflict={resolveExternalUpdate}
         />

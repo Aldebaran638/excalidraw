@@ -9,6 +9,7 @@ import { Button } from "@excalidraw/excalidraw/components/Button";
 import { Dialog } from "@excalidraw/excalidraw/components/Dialog";
 
 import { NoteChatMarkdown } from "./NoteChatMarkdown";
+import { ChatWidgetCard } from "./ChatWidgetCard";
 import "./NoteChatPanel.scss";
 
 import type { NoteChatController } from "../data/noteChats";
@@ -38,10 +39,22 @@ export const NoteChatPanel = ({
   const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
   const [title, setTitle] = useState("");
   const [copied, setCopied] = useState("");
+  const [choosingWidget, setChoosingWidget] = useState(false);
   const error =
     (noteId && selected && state.errors[`${noteId}/${selected}`]) ||
     state.errors[noteId || "unbound"];
   const draft = selected ? ui?.drafts[selected] || "" : "";
+  const workspace = selected ? ui?.workspaces?.[selected] : undefined;
+  const canvasWidgets = controller.widgetHost?.elements() || [];
+  const latestVersions = new Map<string, number>();
+  for (const message of session?.messages || []) {
+    for (const ref of message.artifacts || []) {
+      latestVersions.set(
+        ref.artifactId,
+        Math.max(latestVersions.get(ref.artifactId) || 0, ref.version),
+      );
+    }
+  }
   useEffect(() => {
     void controller.refresh();
   }, [controller]);
@@ -188,8 +201,8 @@ export const NoteChatPanel = ({
               ✦
             </div>
             <h4>围绕这篇笔记，慢慢展开</h4>
-            <p>提问、梳理思路，或让 AI 解释画布中的某个部分。</p>
-            <small>需要时 AI 才会阅读当前画布，不会修改笔记。</small>
+            <p>讨论笔记，也可以描述一个交互组件，试用满意后再放进画布。</p>
+            <small>按需阅读画布；导入和应用修改都由你确认。</small>
             {!session && (
               <Button
                 onSelect={() => void controller.create()}
@@ -224,8 +237,8 @@ export const NoteChatPanel = ({
                   {message.activities.some(
                     (activity) => activity.status === "reading",
                   )
-                    ? "正在阅读当前笔记…"
-                    : `阅读活动 ${message.activities.length} 次`}{" "}
+                    ? "正在调用工具…"
+                    : `工具活动 ${message.activities.length} 次`}{" "}
                   · 发送时画布 ·{" "}
                   {new Date(
                     message.activities[0].snapshotAt,
@@ -241,10 +254,19 @@ export const NoteChatPanel = ({
                             get_note_outline: "查看笔记目录",
                             search_note: "搜索笔记内容",
                             read_note_elements: "读取元素详情",
+                            create_widget_draft: "生成组件候选",
+                            revise_widget_draft: "修改组件候选",
+                            read_chat_widget: "读取聊天作品",
                           } as Record<string, string>
                         )[activity.name] ||
                         "阅读笔记"}
                     </span>
+                    {activity.details && (
+                      <details className="note-chat-tool-details">
+                        <summary>查看错误详情</summary>
+                        <pre>{activity.details}</pre>
+                      </details>
+                    )}
                     {activity.elementIds.map((id) => (
                       <code key={id} title={id}>
                         {id.slice(0, 8)}
@@ -254,12 +276,38 @@ export const NoteChatPanel = ({
                 ))}
               </details>
             )}
+            {message.role === "assistant" && message.reasoning && (
+              <details className="note-chat-reasoning">
+                <summary>
+                  {message.status === "generating" && !message.content
+                    ? "正在思考…"
+                    : "思考过程"}
+                </summary>
+                <div>{message.reasoning}</div>
+              </details>
+            )}
             <NoteChatMarkdown
               content={
                 message.content ||
-                (message.status === "generating" ? "正在思考…" : "")
+                (message.status === "generating" && !message.reasoning
+                  ? message.thinking
+                    ? "等待模型思考…"
+                    : "正在生成回答…"
+                  : "")
               }
             />
+            {noteId &&
+              selected &&
+              message.artifacts?.map((ref) => (
+                <ChatWidgetCard
+                  key={`${ref.artifactId}:${ref.version}`}
+                  controller={controller}
+                  noteId={noteId}
+                  sessionId={selected}
+                  reference={ref}
+                  latest={latestVersions.get(ref.artifactId) === ref.version}
+                />
+              ))}
             {message.role === "assistant" && message.content && (
               <Button
                 onSelect={async () => {
@@ -321,6 +369,11 @@ export const NoteChatPanel = ({
           )}
         </div>
       )}
+      {noteId && selected && state.widgetPhases[`${noteId}/${selected}`] && (
+        <p className="note-chat-widget-phase" role="status">
+          {state.widgetPhases[`${noteId}/${selected}`]}
+        </p>
+      )}
       {session && noteId && selected && (
         <form
           className="note-chat-composer"
@@ -330,9 +383,61 @@ export const NoteChatPanel = ({
             void controller.send(noteId, selected);
           }}
         >
+          {workspace && (
+            <div className="note-chat-workspace">
+              <span>
+                {workspace.kind === "element"
+                  ? `画布组件 · ${
+                      canvasWidgets.find(
+                        (item) => item.id === workspace.elementId,
+                      )?.title || "目标已不存在"
+                    }`
+                  : `聊天作品 · v${workspace.version}`}
+              </span>
+              <button
+                type="button"
+                aria-label="更换创作目标"
+                onClick={() => setChoosingWidget(!choosingWidget)}
+              >
+                更换
+              </button>
+              <button
+                type="button"
+                aria-label="移除当前创作目标"
+                onClick={() => controller.setWorkspace(noteId, selected)}
+              >
+                ×
+              </button>
+            </div>
+          )}
+          {canvasWidgets.length > 0 && (!workspace || choosingWidget) && (
+            <details className="note-chat-reference" open={choosingWidget}>
+              <summary>引用画布组件</summary>
+              <select
+                aria-label="引用画布组件"
+                value={workspace?.kind === "element" ? workspace.elementId : ""}
+                onChange={(event) => {
+                  if (event.target.value) {
+                    setChoosingWidget(false);
+                    controller.setWorkspace(noteId, selected, {
+                      kind: "element",
+                      elementId: event.target.value,
+                    });
+                  }
+                }}
+              >
+                <option value="">选择要讨论或修改的组件…</option>
+                {canvasWidgets.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title} · {item.id.slice(0, 6)}
+                  </option>
+                ))}
+              </select>
+            </details>
+          )}
           <textarea
             aria-label="聊天消息"
-            placeholder="问问这篇笔记…"
+            placeholder="讨论笔记，或描述想创建、修改的组件…"
             rows={3}
             maxLength={12000}
             value={draft}
@@ -354,7 +459,17 @@ export const NoteChatPanel = ({
             }}
           />
           <div className="note-chat-compose-actions">
-            <small>Shift+Enter 换行</small>
+            <button
+              type="button"
+              className="note-chat-thinking"
+              aria-pressed={ui?.thinking === true}
+              title="开启后，Qwen 会先思考再回答，等待时间可能更长。切换对下一条消息生效。"
+              onClick={() =>
+                controller.setThinking(noteId, ui?.thinking !== true)
+              }
+            >
+              思考{ui?.thinking ? "已开启" : "已关闭"}
+            </button>
             {running || generating ? (
               <Button onSelect={() => void controller.stop(noteId, selected)}>
                 停止回答
@@ -386,7 +501,7 @@ export const NoteChatPanel = ({
               </Button>
             )}
           <p className="note-chat-context-hint">
-            按需阅读当前画布 · 最多使用最近 20 轮及上下文预算内的记录
+            Shift+Enter 换行 · 按需阅读画布 · 最近 20 轮及上下文预算内记录
           </p>
         </form>
       )}

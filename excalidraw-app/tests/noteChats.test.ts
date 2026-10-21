@@ -32,6 +32,29 @@ const browser = (fetch: typeof globalThis.fetch) => {
 };
 const json = (data: unknown) => new Response(JSON.stringify(data));
 describe("application-owned chat controller", () => {
+  it("remembers the thinking preference per note across refresh", () => {
+    const ownerWindow = browser(
+      vi.fn(async () => json({ sessions: [] })) as typeof fetch,
+    );
+    const context = { noteId, name: "a.excalidraw", documentSession: 1 };
+    const create = () =>
+      new NoteChatController(
+        ownerWindow,
+        async () => ({ noteId, name: context.name }),
+        () => ({ capturedAt: 1, elements: [] }),
+      );
+    const first = create();
+    first.bind(context);
+    expect(first.getState().ui[noteId].thinking).toBeUndefined();
+    first.setThinking(noteId, true);
+    first.dispose();
+    const restored = create();
+    restored.bind(context);
+    expect(restored.getState().ui[noteId].thinking).toBe(true);
+    restored.setThinking(noteId, false);
+    expect(restored.getState().ui[noteId].thinking).toBe(false);
+    restored.dispose();
+  });
   it("does not let a late list response deselect a newly created session", async () => {
     let resolve!: (response: Response) => void;
     const pending = new Promise<Response>((done) => {

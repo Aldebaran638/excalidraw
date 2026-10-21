@@ -1,6 +1,17 @@
 import { randomId } from "@excalidraw/common";
 
+import { WidgetRuntimeState } from "../../packages/interactive-widgets/runtimeState";
+
 import { readSSE } from "./sse";
+import { widgetRef, sameState } from "./chatWidgets";
+
+import type {
+  ChatWorkspace,
+  ChatWidgetData,
+  ChatWidgetHost,
+  ChatWidgetRef,
+} from "./chatWidgets";
+import type { WidgetState } from "../../packages/interactive-widgets/types";
 
 import type {
   ChatEvent,
@@ -20,6 +31,8 @@ type UI = {
   drafts: Record<string, string>;
   scrolls: Record<string, number>;
   unread?: Record<string, boolean>;
+  thinking?: boolean;
+  workspaces?: Record<string, ChatWorkspace | undefined>;
 };
 type State = {
   context: Context;
@@ -29,6 +42,10 @@ type State = {
   errors: Record<string, string>;
   busy: boolean;
   storageError: string;
+  artifacts: Record<string, ChatWidgetData>;
+  artifactErrors: Record<string, string>;
+  widgetPhases: Record<string, string>;
+  placing: string | null;
 };
 const blankUI = (): UI => ({ selected: null, drafts: {}, scrolls: {} });
 export class NoteChatController {
@@ -40,12 +57,25 @@ export class NoteChatController {
     errors: {},
     busy: false,
     storageError: "",
+    artifacts: {},
+    artifactErrors: {},
+    widgetPhases: {},
+    placing: null,
   };
   private listeners = new Set<() => void>();
   private frame: number | null = null;
   private refreshVersions = new Map<string, number>();
   private unsaved = new Set<string>();
   private deleted = new Set<string>();
+  public widgetHost?: ChatWidgetHost;
+  private widgetRuntimes = new Map<string, WidgetRuntimeState>();
+  private trialTimers = new Map<string, number>();
+  private trialSaves = new Map<string, Promise<void>>();
+  private trialDirty = new Set<string>();
+  private artifactLoads = new Map<
+    string,
+    Promise<ChatWidgetData | undefined>
+  >();
   private active = new Map<
     string,
     { turnId: string; abort: AbortController }
@@ -156,6 +186,286 @@ export class NoteChatController {
       ...ui,
       drafts: { ...ui.drafts, [sessionId]: content },
     });
+  }
+  setThinking(noteId: string, thinking: boolean) {
+    this.saveUI(noteId, { ...(this.state.ui[noteId] || blankUI()), thinking });
+  }
+  artifactKey(
+    noteId: string,
+    sessionId: string,
+    ref: Pick<ChatWidgetRef, "artifactId" | "version">,
+  ) {
+    return `${noteId}/${sessionId}/${ref.artifactId}/${ref.version}`;
+  }
+  setWorkspace(noteId: string, sessionId: string, workspace?: ChatWorkspace) {
+    const ui = this.state.ui[noteId] || blankUI();
+    this.saveUI(noteId, {
+      ...ui,
+      workspaces: { ...ui.workspaces, [sessionId]: workspace },
+    });
+  }
+  runtimeForArtifact(key: string, data: ChatWidgetData) {
+    let runtime = this.widgetRuntimes.get(key);
+    if (!runtime) {
+      runtime = new WidgetRuntimeState(data.document.state);
+      this.widgetRuntimes.set(key, runtime);
+    }
+    return runtime;
+  }
+  loadArtifact(
+    noteId: string,
+    sessionId: string,
+    ref: ChatWidgetRef,
+  ): Promise<ChatWidgetData | undefined> {
+    const key = this.artifactKey(noteId, sessionId, ref);
+    if (this.state.artifacts[key]) {
+      return Promise.resolve(this.state.artifacts[key]);
+    }
+    const pending = this.artifactLoads.get(key);
+    if (pending) {
+      return pending;
+    }
+    const promise = (async () => {
+      try {
+        const data: ChatWidgetData = await this.request(
+          `${this.url(noteId, sessionId)}/artifacts/${encodeURIComponent(
+            ref.artifactId,
+          )}?version=${ref.version}`,
+        );
+        const versions = [
+          ...new Map(
+            [
+              ...Object.values(this.state.artifacts)
+                .filter(
+                  (entry) =>
+                    entry.noteId === noteId &&
+                    entry.sessionId === sessionId &&
+                    entry.artifactId === data.artifactId,
+                )
+                .flatMap((entry) => entry.versions),
+              ...data.versions,
+            ].map((entry) => [entry.version, entry]),
+          ).values(),
+        ].sort((a, b) => a.version - b.version);
+        this.state.artifacts = Object.fromEntries(
+          Object.entries({ ...this.state.artifacts, [key]: data }).map(
+            ([entryKey, entry]) => [
+              entryKey,
+              entry.noteId === noteId &&
+              entry.sessionId === sessionId &&
+              entry.artifactId === data.artifactId
+                ? { ...entry, versions }
+                : entry,
+            ],
+          ),
+        );
+        this.state.artifactErrors = { ...this.state.artifactErrors, [key]: "" };
+        this.emit();
+        return data;
+      } catch (error) {
+        this.state.artifactErrors = {
+          ...this.state.artifactErrors,
+          [key]: (error as Error).message,
+        };
+        this.emit();
+        return undefined;
+      } finally {
+        this.artifactLoads.delete(key);
+      }
+    })();
+    this.artifactLoads.set(key, promise);
+    return promise;
+  }
+  commitTrial(key: string, state: WidgetState) {
+    const data = this.state.artifacts[key];
+    if (!data || sameState(data.document.state, state)) {
+      return;
+    }
+    this.runtimeForArtifact(key, data).set(state);
+    this.state.artifacts = {
+      ...this.state.artifacts,
+      [key]: { ...data, document: { ...data.document, state } },
+    };
+    this.trialDirty.add(key);
+    const timer = this.trialTimers.get(key);
+    if (timer !== undefined) {
+      this.ownerWindow.clearTimeout(timer);
+    }
+    this.trialTimers.set(
+      key,
+      this.ownerWindow.setTimeout(() => {
+        this.trialTimers.delete(key);
+        void this.saveTrial(key);
+      }, 500),
+    );
+    this.emit();
+  }
+  async saveTrial(key: string): Promise<void> {
+    const before = this.trialSaves.get(key) || Promise.resolve();
+    const pending = before
+      .catch(() => {})
+      .then(async () => {
+        const data = this.state.artifacts[key];
+        if (!data || !this.trialDirty.has(key)) {
+          return;
+        }
+        try {
+          const state = data.document.state;
+          const response: ChatWidgetData = await this.request(
+            `${this.url(data.noteId, data.sessionId)}/artifacts/${
+              data.artifactId
+            }?version=${data.version}`,
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ revision: data.revision, state }),
+            },
+          );
+          const current = this.state.artifacts[key];
+          const unchanged = sameState(current.document.state, state);
+          this.state.artifacts = {
+            ...this.state.artifacts,
+            [key]: {
+              ...response,
+              document: { ...response.document, state: current.document.state },
+            },
+          };
+          if (unchanged) {
+            this.trialDirty.delete(key);
+          }
+          this.state.artifactErrors = {
+            ...this.state.artifactErrors,
+            [key]: "",
+          };
+        } catch (error) {
+          this.state.artifactErrors = {
+            ...this.state.artifactErrors,
+            [key]: `试用输入尚未保存：${(error as Error).message}`,
+          };
+        }
+        this.emit();
+      });
+    this.trialSaves.set(key, pending);
+    await pending;
+    if (this.trialSaves.get(key) === pending) {
+      this.trialSaves.delete(key);
+    }
+  }
+  async discardTrial(key: string) {
+    const data = this.state.artifacts[key];
+    if (!data) {
+      return;
+    }
+    const timer = this.trialTimers.get(key);
+    if (timer !== undefined) {
+      this.ownerWindow.clearTimeout(timer);
+      this.trialTimers.delete(key);
+    }
+    await this.trialSaves.get(key);
+    this.trialDirty.delete(key);
+    this.widgetRuntimes.delete(key);
+    const { [key]: removed, ...rest } = this.state.artifacts;
+    this.state.artifacts = rest;
+    await this.loadArtifact(data.noteId, data.sessionId, widgetRef(data));
+  }
+  placeArtifact(data: ChatWidgetData) {
+    if (
+      !this.widgetHost ||
+      this.state.context.noteId !== data.noteId ||
+      this.state.ui[data.noteId]?.selected !== data.sessionId ||
+      this.state.placing
+    ) {
+      return;
+    }
+    const documentSession = this.state.context.documentSession;
+    const key = this.artifactKey(data.noteId, data.sessionId, widgetRef(data));
+    const isCurrent = () =>
+      this.state.context.noteId === data.noteId &&
+      this.state.context.documentSession === documentSession &&
+      this.state.ui[data.noteId]?.selected === data.sessionId;
+    this.state.placing = key;
+    this.emit();
+    try {
+      this.widgetHost.place(
+        data,
+        structuredClone({
+          ...data.document,
+          state: this.runtimeForArtifact(key, data).state,
+        }),
+        isCurrent,
+        (id) => {
+          this.state.placing = null;
+          if (id && isCurrent()) {
+            this.setWorkspace(data.noteId, data.sessionId, {
+              kind: "element",
+              elementId: id,
+            });
+          } else {
+            this.emit();
+          }
+        },
+      );
+    } catch (error) {
+      this.state.placing = null;
+      this.error(`${data.noteId}/${data.sessionId}`, error);
+    }
+  }
+  applyArtifact(data: ChatWidgetData, trialInputs: boolean) {
+    if (
+      this.state.context.noteId !== data.noteId ||
+      this.state.ui[data.noteId]?.selected !== data.sessionId
+    ) {
+      throw new Error("请返回该作品所属的笔记和会话再应用");
+    }
+    if (!this.widgetHost || !data.target) {
+      throw new Error("目标画布不可用");
+    }
+    const key = this.artifactKey(data.noteId, data.sessionId, widgetRef(data));
+    this.widgetHost.apply(
+      data,
+      { ...data.document, state: this.runtimeForArtifact(key, data).state },
+      trialInputs,
+    );
+    this.setWorkspace(data.noteId, data.sessionId, {
+      kind: "element",
+      elementId: data.target.elementId,
+    });
+  }
+  private sceneKey = "";
+  sceneChanged() {
+    const key = JSON.stringify([
+      this.widgetHost?.elements(),
+      ...Object.values(this.state.artifacts)
+        .filter((data) => data.noteId === this.state.context.noteId)
+        .map((data) =>
+          this.widgetHost?.placements({
+            noteId: data.noteId,
+            sessionId: data.sessionId,
+            artifactId: data.artifactId,
+            version: data.version,
+          }),
+        ),
+    ]);
+    if (key !== this.sceneKey) {
+      this.sceneKey = key;
+      this.emit(true);
+    }
+  }
+  async referenceElement(elementId: string) {
+    if (!this.widgetHost?.read(elementId)) {
+      return;
+    }
+    if (
+      !this.state.context.noteId ||
+      !this.state.ui[this.state.context.noteId]?.selected
+    ) {
+      await this.create();
+    }
+    const noteId = this.state.context.noteId;
+    const id = noteId ? this.state.ui[noteId]?.selected : null;
+    if (noteId && id && this.widgetHost?.read(elementId)) {
+      this.setWorkspace(noteId, id, { kind: "element", elementId });
+    }
   }
   saveScroll(noteId: string, sessionId: string, position: number) {
     const ui = this.state.ui[noteId] || blankUI();
@@ -401,6 +711,12 @@ export class NoteChatController {
       return;
     }
     const snapshot = this.capture();
+    const documentSession = this.state.context.documentSession;
+    const workspace = this.state.ui[noteId]?.workspaces?.[id];
+    const artifact =
+      workspace?.kind === "artifact"
+        ? this.state.artifacts[this.artifactKey(noteId, id, workspace)]
+        : undefined;
     const turnId = randomId();
     const abort = new this.ownerWindow.AbortController();
     this.active.set(key, { turnId, abort });
@@ -418,7 +734,15 @@ export class NoteChatController {
             turnId,
             content,
             retryMessageId,
+            thinking: this.state.ui[noteId]?.thinking === true,
             snapshot,
+            workspace,
+            workspaceState: artifact
+              ? this.runtimeForArtifact(
+                  this.artifactKey(noteId, id, artifact),
+                  artifact,
+                ).state
+              : undefined,
             revision: session.revision,
             noteName: this.state.context.name,
           }),
@@ -452,6 +776,48 @@ export class NoteChatController {
         if (event.session) {
           this.accept(event.session, true);
         }
+        if (
+          ["widget_start", "widget_ready", "widget_error"].includes(event.type)
+        ) {
+          this.state.widgetPhases = {
+            ...this.state.widgetPhases,
+            [key]:
+              event.type === "widget_start"
+                ? "正在生成与校验组件…"
+                : event.type === "widget_error"
+                ? `组件生成失败：${event.error}`
+                : "",
+          };
+          if (event.artifact) {
+            void this.loadArtifact(noteId, id, event.artifact);
+            if (
+              this.state.context.noteId === noteId &&
+              this.state.context.documentSession === documentSession &&
+              this.state.ui[noteId]?.selected === id
+            ) {
+              this.setWorkspace(noteId, id, {
+                kind: "artifact",
+                artifactId: event.artifact.artifactId,
+                version: event.artifact.version,
+              });
+            }
+            const session = this.state.sessions[key];
+            if (session) {
+              this.accept(
+                {
+                  ...session,
+                  messages: session.messages.map((message) =>
+                    message.turnId === turnId && message.role === "assistant"
+                      ? { ...message, artifacts: [event.artifact!] }
+                      : message,
+                  ),
+                },
+                true,
+              );
+            }
+          }
+          this.emit(true);
+        }
         if (event.type === "start" && !retry) {
           this.setDraft(noteId, id, "");
         }
@@ -479,7 +845,12 @@ export class NoteChatController {
               }
               return {
                 ...message,
-                content: message.content + (event.delta || ""),
+                ...(event.type === "reasoning"
+                  ? {
+                      reasoning:
+                        (message.reasoning || "") + (event.delta || ""),
+                    }
+                  : { content: message.content + (event.delta || "") }),
               };
             }),
           };
@@ -525,6 +896,9 @@ export class NoteChatController {
       }
       this.error(key, error);
     } finally {
+      if (this.state.widgetPhases[key]?.startsWith("正在")) {
+        this.state.widgetPhases = { ...this.state.widgetPhases, [key]: "" };
+      }
       this.active.delete(key);
       const ui = this.state.ui[noteId] || blankUI();
       if (this.state.context.noteId !== noteId || ui.selected !== id) {
@@ -534,6 +908,12 @@ export class NoteChatController {
     }
   }
   dispose() {
+    for (const timer of this.trialTimers.values()) {
+      this.ownerWindow.clearTimeout(timer);
+    }
+    for (const key of this.trialDirty) {
+      void this.saveTrial(key);
+    }
     for (const value of this.active.values()) {
       value.abort.abort();
     }

@@ -1,9 +1,11 @@
 /* Independent browser acceptance. Never point TEST_NOTES_DIR at user notes. */
+/* eslint-disable no-console */
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+
 const puppeteer = require("puppeteer-core");
-const base = process.env.APP_URL || "http://127.0.0.1:3108";
+const base = process.env.APP_URL || "http://127.0.0.1:3009";
 const stamp = Date.now();
 const names = [
   `__chat-browser-${stamp}-a.excalidraw`,
@@ -37,7 +39,9 @@ const note = async (name) => (await fetch(`${base}/api/notes/${name}`)).json();
 const identity = async (name) => {
   for (let i = 0; i < 50; i++) {
     const value = await note(name);
-    if (value.repositoryMetadata) return value.repositoryMetadata.noteId;
+    if (value.repositoryMetadata) {
+      return value.repositoryMetadata.noteId;
+    }
     await sleep(100);
   }
   throw new Error("Identity was not saved");
@@ -50,8 +54,9 @@ const waitSession = async (noteId, sessionId) => {
     if (
       session.messages?.some((message) => message.role === "assistant") &&
       !session.messages.some((message) => message.status === "generating")
-    )
+    ) {
       return session;
+    }
     await sleep(400);
   }
   throw new Error("Answer did not finish");
@@ -70,8 +75,9 @@ const openNote = async (page, name) => {
   await page.waitForFunction(
     () => !document.querySelector(".RepositoryNotesDialog"),
   );
-  if (!(await page.$(".note-chat")))
+  if (!(await page.$(".note-chat"))) {
     await click(page, '[aria-label="打开笔记聊天"]');
+  }
 };
 (async () => {
   assert.ok(process.env.BROWSER_EXECUTABLE);
@@ -123,7 +129,7 @@ const openNote = async (page, name) => {
       embeddable: { contentLocked: true, interaction: "controls" },
     },
   };
-  for (const name of names)
+  for (const name of names) {
     assert.equal(
       (
         await fetch(`${base}/api/notes/${name}`, {
@@ -140,6 +146,7 @@ const openNote = async (page, name) => {
       ).status,
       200,
     );
+  }
   browser = await puppeteer.launch({
     executablePath: process.env.BROWSER_EXECUTABLE,
     headless: true,
@@ -175,7 +182,7 @@ const openNote = async (page, name) => {
   await button(page, "开启第一个会话");
   await page.waitForSelector('textarea[aria-label="聊天消息"]');
   const noteId = await identity(names[0]);
-  let list = await (await fetch(`${base}/api/notes/${noteId}/chats`)).json();
+  const list = await (await fetch(`${base}/api/notes/${noteId}/chats`)).json();
   const firstId = list.sessions[0].id;
   console.log("PASS lazy note identity, native sidebar and stable viewport");
   // Pause only note PUTs, not Workers: prove the model reads unsaved canvas state.
@@ -186,7 +193,9 @@ const openNote = async (page, name) => {
     ],
   });
   cdp.on("Fetch.requestPaused", async (event) => {
-    if (event.request.method === "PUT") await sleep(2500);
+    if (event.request.method === "PUT") {
+      await sleep(2500);
+    }
     await cdp
       .send("Fetch.continueRequest", { requestId: event.requestId })
       .catch(() => {});
@@ -336,6 +345,98 @@ const openNote = async (page, name) => {
   console.log(
     "PASS note switching, history restoration and foreign-session protection",
   );
+  await button(page, "思考已关闭");
+  assert.equal(
+    await page.$eval(".note-chat-thinking", (node) =>
+      node.getAttribute("aria-pressed"),
+    ),
+    "true",
+  );
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 120000 });
+  await page.waitForSelector('.note-chat-thinking[aria-pressed="true"]', {
+    timeout: 120000,
+  });
+  const stableView = await box();
+  await page.type(
+    'textarea[aria-label="聊天消息"]',
+    "不需要读取笔记。请计算17乘23，用一个标准Markdown表格回答，表头是表达式和结果，只有一行数据。不要使用代码块。",
+  );
+  const thinkingRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && request.url().endsWith("/turns"),
+  );
+  const thinkingResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith("/turns"),
+  );
+  await button(page, "发送 ↑");
+  assert.equal(JSON.parse((await thinkingRequest).postData()).thinking, true);
+  await thinkingResponse;
+  let thinkingAnswer = await waitSession(noteId, firstId);
+  if (thinkingAnswer.messages.at(-1).status !== "complete") {
+    console.log(
+      "UPSTREAM thinking attempt failed; testing explicit user retry:",
+      thinkingAnswer.messages.at(-1).error,
+    );
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll(".note-chat button")].some(
+        (node) => node.textContent === "重试最后一个问题",
+      ),
+    );
+    const retryResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith("/turns"),
+    );
+    await button(page, "重试最后一个问题");
+    await retryResponse;
+    thinkingAnswer = await waitSession(noteId, firstId);
+  }
+  assert.equal(
+    thinkingAnswer.messages.at(-1).status,
+    "complete",
+    JSON.stringify(thinkingAnswer.messages.at(-1)),
+  );
+  assert.ok(
+    thinkingAnswer.messages.at(-1).reasoning?.length > 0,
+    "Real upstream must return a separate reasoning stream",
+  );
+  assert.ok(thinkingAnswer.messages.at(-1).content.includes("391"));
+  await page.waitForSelector(".note-chat-table tbody td");
+  await page.waitForSelector(".note-chat-reasoning");
+  assert.equal(
+    await page.$eval(".note-chat-reasoning", (node) => node.open),
+    false,
+  );
+  assert.deepEqual(
+    await box(),
+    stableView,
+    "Streaming reasoning and tables must not shift the canvas",
+  );
+  await page.screenshot({ path: "/tmp/note-chat-thinking-desktop.png" });
+  await button(page, "思考已开启");
+  await page.type(
+    'textarea[aria-label="聊天消息"]',
+    "不需要读取笔记。17乘23是多少？只输出结果。",
+  );
+  const fastResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith("/turns"),
+  );
+  await button(page, "发送 ↑");
+  assert.equal(
+    JSON.parse((await fastResponse).request().postData()).thinking,
+    false,
+  );
+  const fastAnswer = await waitSession(noteId, firstId);
+  assert.equal(fastAnswer.messages.at(-1).status, "complete");
+  assert.equal(fastAnswer.messages.at(-1).thinking, false);
+  assert.ok(!fastAnswer.messages.at(-1).reasoning);
+  console.log(
+    "PASS real Qwen thinking toggle, refresh persistence, separate reasoning stream and Markdown table rendering",
+  );
   await click(page, '[aria-label="会话更多操作"]');
   await button(page, "重命名");
   await click(page, '.note-chat-dialog input[aria-label="会话名称"]');
@@ -374,8 +475,9 @@ const openNote = async (page, name) => {
   await page.waitForFunction(
     () => !document.querySelector(".RepositoryNotesDialog"),
   );
-  if (!(await page.$(".note-chat")))
+  if (!(await page.$(".note-chat"))) {
     await click(page, '[aria-label="打开笔记聊天"]');
+  }
   await page.waitForSelector(".note-chat-empty");
   assert.ok(
     !(await note(copyName)).repositoryMetadata,
@@ -418,10 +520,11 @@ const openNote = async (page, name) => {
     ) {
       heldOnce = true;
       release(event.requestId);
-    } else
+    } else {
       await delayed
         .send("Fetch.continueRequest", { requestId: event.requestId })
         .catch(() => {});
+    }
   });
   await delayed.send("Fetch.enable", {
     patterns: [
@@ -517,10 +620,14 @@ const openNote = async (page, name) => {
     process.exitCode = 1;
   })
   .finally(async () => {
-    if (browser) await browser.close();
-    if (process.env.TEST_NOTES_DIR)
-      for (const name of [...names, copyName])
+    if (browser) {
+      await browser.close();
+    }
+    if (process.env.TEST_NOTES_DIR) {
+      for (const name of [...names, copyName]) {
         await fs
           .unlink(path.join(process.env.TEST_NOTES_DIR, name))
           .catch(() => {});
+      }
+    }
   });
