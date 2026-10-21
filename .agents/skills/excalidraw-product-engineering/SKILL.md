@@ -22,7 +22,7 @@ description: Design, implement and review this project's Excalidraw features wit
 - 不以渲染、悬停、滚动或动画触发笔记写盘。保留串行保存、revision/ETag、自身事件抑制及外部更新冲突保护。
 - 打开面板、自动保存、流式更新不能重置画布视角、缩放或历史。未确认的 AI 候选不写入场景。
 - 新增 DOM/browser API 使用 app.ownerDocument、app.ownerWindow；无 app 时从挂载节点取得 ownerDocument/defaultView。
-- AI 数据是非可信输入：校验定义、工具参数和目标范围，不执行模型返回的任意代码、HTML 或网络请求。
+- AI 数据是非可信输入：校验定义、工具参数和目标范围。允许聊天中的 HTML/CSS/JavaScript 在隔离预览中运行，不直接在宿主页面执行；默认禁止访问宿主数据、网络、弹窗及顶层导航。旧声明式组件继续沿用原校验与运行时。
 - 保留用户未提交的笔记和计划改动；使用独立测试目录及端口，不擅自替换正在使用的服务。
 
 ## 验收
