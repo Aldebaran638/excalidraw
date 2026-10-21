@@ -118,8 +118,9 @@ const puppeteer = require("puppeteer-core");
         "*",
       ),
     );
-    await page.waitForFunction(() =>
-      window.events.some((event) => event.type === "complete"),
+    await page.waitForFunction(
+      () => window.events.some((event) => event.type === "complete"),
+      { polling: 100 },
     );
     assert.equal(await frame.evaluate(() => window.execs), 1);
     console.log(

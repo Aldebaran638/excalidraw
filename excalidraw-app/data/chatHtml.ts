@@ -6,6 +6,7 @@ export type HtmlState = {
 };
 export type HtmlArtifact = HtmlRef & {
   formatVersion?: 1;
+  runtimeVersion?: number;
   noteId: string;
   sessionId: string;
   title: string;
@@ -58,6 +59,7 @@ export type ChatBlock =
       complete: boolean;
       saved?: boolean;
       initialState?: HtmlState;
+      runtimeVersion?: number;
     };
 
 /** Markdown fence framing only. HTML tokenization belongs to the browser parser.

@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 
 import { readSSE } from "../data/sse";
+import {
+  supportsHtmlBlocks,
+  HTML_RUNTIME_VERSION,
+} from "../data/clientProtocol";
 
 import { validId } from "../data/noteIdentity";
 
@@ -41,6 +45,7 @@ export const createChatService = async (
   directory: string,
   config: AIConfig,
   transport: typeof fetch = fetch,
+  options: { requireClientCapabilities?: boolean } = {},
 ) => {
   const store = new ChatStore(directory);
   const artifacts = new ChatArtifactStore(directory);
@@ -193,7 +198,24 @@ export const createChatService = async (
       const key = keyFor(noteId, sessionId);
       if (!isTurn) {
         if (req.method === "GET") {
-          sendJson(res, 200, await store.read(noteId, sessionId));
+          const session = await store.read(noteId, sessionId);
+          sendJson(
+            res,
+            200,
+            supportsHtmlBlocks(req.headers)
+              ? session
+              : {
+                  ...session,
+                  messages: session.messages.map((message) =>
+                    message.blocks?.some((block) => block.type === "html")
+                      ? {
+                          ...message,
+                          content: `${message.content}\n\n[本条回答包含已保存的交互应用。检测到旧版或未声明应用展示能力的客户端，请更新并刷新界面查看。]`,
+                        }
+                      : message,
+                  ),
+                },
+          );
         } else if (req.method === "PATCH") {
           const body = JSON.parse(await readBody(req, 4096));
           if (
@@ -224,6 +246,15 @@ export const createChatService = async (
       }
       if (req.method !== "POST") {
         throw new ChatError(405, "请使用 POST 发送消息");
+      }
+      if (
+        options.requireClientCapabilities &&
+        !supportsHtmlBlocks(req.headers)
+      ) {
+        throw new ChatError(
+          426,
+          "当前聊天界面版本过旧，无法展示交互应用。请先保留输入并刷新页面；尚未调用模型。",
+        );
       }
       const body = JSON.parse(await readBody(req, 8 * 1024 * 1024));
       if (
@@ -477,6 +508,7 @@ export const createChatService = async (
             type: "html",
             ref,
             complete: false,
+            runtimeVersion: HTML_RUNTIME_VERSION,
             ...(useBase
               ? { initialState: structuredClone(htmlBase!.state) }
               : {}),
@@ -494,6 +526,7 @@ export const createChatService = async (
               ? structuredClone(htmlBase!.state)
               : { forms: {}, custom: {} },
             createdAt: Date.now(),
+            runtimeVersion: HTML_RUNTIME_VERSION,
           });
           htmlDirty.add(ref.artifactId);
           void flushHtml();
@@ -1240,6 +1273,21 @@ export const createChatService = async (
           assistant.error = (error as Error).message;
         }
         await flushHtml();
+        // Metadata only: never log conversation text or generated source.
+        // eslint-disable-next-line no-console
+        console.info(
+          JSON.stringify({
+            event: "chat_preview_turn",
+            protocol: req.headers["x-chat-protocol"] || "legacy",
+            runtimeVersion: HTML_RUNTIME_VERSION,
+            noteId,
+            sessionId,
+            turnId: body.turnId,
+            status: assistant.status,
+            phase: htmlSaveFailed ? "artifact_save_failed" : "stream_finished",
+            artifacts: [...htmlDrafts.keys()],
+          }),
+        );
         if (htmlSaveFailed) {
           assistant.status = "failed";
           assistant.error = abort.signal.reason?.message || "HTML 源码尚未保存";

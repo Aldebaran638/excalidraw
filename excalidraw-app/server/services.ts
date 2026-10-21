@@ -1,19 +1,32 @@
 import { createAIHandler, aiConfigFromEnv } from "./ai";
 import { createNoteService, sendJson } from "./notes";
 import { createChatService } from "./chat";
+import { clientInfo } from "./clientInfo";
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export const createServices = async (notesDirectory: string) => {
   const notes = await createNoteService(notesDirectory);
   const ai = createAIHandler(aiConfigFromEnv());
-  const chats = await createChatService(notesDirectory, aiConfigFromEnv());
+  const chats = await createChatService(
+    notesDirectory,
+    aiConfigFromEnv(),
+    fetch,
+    { requireClientCapabilities: true },
+  );
   return {
     close: async () => {
       await chats.close();
       await notes.close();
     },
     handle: async (req: IncomingMessage, res: ServerResponse) => {
+      if (
+        req.url?.split("?")[0] === "/api/client-info" &&
+        req.method === "GET"
+      ) {
+        sendJson(res, 200, await clientInfo());
+        return true;
+      }
       if (req.url?.split("?")[0] === "/api/health") {
         sendJson(res, 200, {
           healthy: true,

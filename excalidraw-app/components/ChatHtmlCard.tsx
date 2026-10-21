@@ -3,6 +3,7 @@ import { Button } from "@excalidraw/excalidraw/components/Button";
 
 import { htmlBootstrap } from "../data/htmlRuntime";
 import { isHtmlState } from "../data/chatHtml";
+import { HTML_RUNTIME_VERSION } from "../data/clientProtocol";
 
 import type { ChatBlock, HtmlArtifact, HtmlState } from "../data/chatHtml";
 import type { NoteChatController } from "../data/noteChats";
@@ -45,7 +46,7 @@ export const ChatHtmlCard = ({
   )}/chats/${encodeURIComponent(sessionId)}/html-artifacts/${
     block.ref.artifactId
   }?version=${block.ref.version}`;
-  source.current = block.source ?? data?.source ?? "";
+  source.current = block.source || data?.source || "";
   completed.current = block.complete || Boolean(data?.complete);
   const pump = () => {
     if (!ready.current || !frame.current?.contentWindow) {
@@ -78,9 +79,19 @@ export const ChatHtmlCard = ({
         if (!response.ok) {
           throw new Error(value.error);
         }
+        if ((value.runtimeVersion || 1) > HTML_RUNTIME_VERSION) {
+          throw new Error(
+            "此应用需要较新的运行时，请更新界面；原始源码已保留。",
+          );
+        }
+        if (value.complete && !value.source.trim()) {
+          throw new Error(
+            "作品引用存在，但源码为空；请重新读取或查看原始记录。",
+          );
+        }
         if (!cancelled) {
           setData(value);
-          revision.current = value.revision;
+          revision.current = Math.max(revision.current, value.revision);
           if (!frame.current) {
             state.current = value.state;
           }
@@ -95,7 +106,7 @@ export const ChatHtmlCard = ({
     return () => {
       cancelled = true;
     };
-  }, [endpoint, block.saved, generating]);
+  }, [endpoint, block.saved, generating, restart]);
   const shouldRun = Boolean(
     generating || running || data?.complete || frame.current,
   );
@@ -118,6 +129,13 @@ export const ChatHtmlCard = ({
     let timer: number | undefined;
     let changed = false;
     let disposed = false;
+    const bootTimer = win.setTimeout(() => {
+      if (!disposed && !ready.current && offset.current === 0) {
+        setError(
+          "预览初始化未完成。源码已保留，请重新运行；可展开版本信息核对界面版本。",
+        );
+      }
+    }, 10000);
     const syncTheme = () => {
       const theme = app?.classList.contains("theme--dark") ? "dark" : "light";
       iframe.style.colorScheme = theme;
@@ -169,6 +187,7 @@ export const ChatHtmlCard = ({
         return;
       }
       if (event.data.type === "ready") {
+        win.clearTimeout(bootTimer);
         ready.current = true;
         syncTheme();
         pump();
@@ -196,6 +215,7 @@ export const ChatHtmlCard = ({
     iframe.srcdoc = htmlBootstrap(token.current, state.current);
     return () => {
       disposed = true;
+      win.clearTimeout(bootTimer);
       win.clearTimeout(timer);
       save();
       win.removeEventListener("message", receive);
@@ -303,6 +323,17 @@ export const ChatHtmlCard = ({
           <code>{source.current}</code>
         </pre>
       )}
+      <details className="note-chat-html-diagnostics">
+        <summary>版本信息</summary>
+        <small>
+          应用 {block.ref.artifactId} · v{block.ref.version} · 运行时{" "}
+          {data?.runtimeVersion || 1}
+          <br />
+          当前界面 {controller.getState().clientInfo?.loadedEntry || "待核对"}
+          <br />
+          服务端 {controller.getState().clientInfo?.buildId || "待核对"}
+        </small>
+      </details>
     </section>
   );
 };

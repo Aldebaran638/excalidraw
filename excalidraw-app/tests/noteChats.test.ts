@@ -32,6 +32,40 @@ const browser = (fetch: typeof globalThis.fetch) => {
 };
 const json = (data: unknown) => new Response(JSON.stringify(data));
 describe("application-owned chat controller", () => {
+  it("detects a mismatched entry without reloading or losing the input draft", async () => {
+    const fetch = vi.fn(async () =>
+      json({
+        buildId: "index-new.js",
+        chatProtocolVersion: 2,
+        htmlRuntimeVersion: 2,
+      }),
+    ) as typeof globalThis.fetch;
+    const ownerWindow = browser(fetch);
+    Object.assign(ownerWindow, {
+      document: {
+        querySelector: () => ({ src: "http://test/assets/index-old.js" }),
+      },
+      location: { reload: vi.fn() },
+    });
+    const controller = new NoteChatController(
+      ownerWindow,
+      async () => ({ noteId, name: "a.excalidraw" }),
+      () => ({ capturedAt: 1, elements: [] }),
+    );
+    controller.bind({ noteId, name: "a.excalidraw", documentSession: 1 });
+    controller.setDraft(noteId, session.id, "未发送的输入");
+    await controller.checkClientVersion();
+    expect(controller.getState().updateAvailable).toBe(true);
+    expect(controller.getState().ui[noteId].drafts[session.id]).toBe(
+      "未发送的输入",
+    );
+    expect(ownerWindow.location.reload).not.toHaveBeenCalled();
+    expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({
+      "X-Chat-Protocol": "2",
+      "X-Chat-Capabilities": "html-blocks",
+    });
+    controller.dispose();
+  });
   it("remembers the thinking preference per note across refresh", () => {
     const ownerWindow = browser(
       vi.fn(async () => json({ sessions: [] })) as typeof fetch,

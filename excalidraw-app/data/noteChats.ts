@@ -4,6 +4,12 @@ import { WidgetRuntimeState } from "../../packages/interactive-widgets/runtimeSt
 
 import { readSSE } from "./sse";
 import { widgetRef, sameState } from "./chatWidgets";
+import {
+  CHAT_HEADERS,
+  CHAT_PROTOCOL_VERSION,
+  HTML_RUNTIME_VERSION,
+} from "./clientProtocol";
+import { applyAppUpdate } from "./appUpdate";
 
 import type {
   ChatWorkspace,
@@ -57,6 +63,13 @@ type State = {
   widgetPhases: Record<string, string>;
   placing: string | null;
   widgetBuilds: Record<string, ChatWidgetBuild>;
+  updateAvailable?: boolean;
+  clientInfo?: {
+    buildId: string;
+    chatProtocolVersion: number;
+    htmlRuntimeVersion: number;
+    loadedEntry?: string;
+  };
 };
 const blankUI = (): UI => ({ selected: null, drafts: {}, scrolls: {} });
 export class NoteChatController {
@@ -131,7 +144,10 @@ export class NoteChatController {
     }`;
   }
   private async request(url: string, init?: RequestInit) {
-    const response = await this.ownerWindow.fetch(url, init);
+    const response = await this.ownerWindow.fetch(url, {
+      ...init,
+      headers: { ...CHAT_HEADERS, ...init?.headers },
+    });
     const data = await response.json();
     if (!response.ok) {
       throw new Error(data.error || "聊天服务不可用");
@@ -144,6 +160,34 @@ export class NoteChatController {
       [noteId]: (error as Error).message,
     };
     this.emit();
+  }
+  async checkClientVersion() {
+    try {
+      const info = await this.request("/api/client-info");
+      const entry = this.ownerWindow.document
+        .querySelector<HTMLScriptElement>('script[type="module"][src]')
+        ?.src.split("/")
+        .at(-1);
+      this.state.clientInfo = { ...info, loadedEntry: entry || "unknown" };
+      this.state.updateAvailable =
+        info.chatProtocolVersion !== CHAT_PROTOCOL_VERSION ||
+        info.htmlRuntimeVersion > HTML_RUNTIME_VERSION ||
+        (info.buildId !== "development" &&
+          info.buildId !== "unknown" &&
+          entry !== info.buildId);
+      this.emit();
+    } catch {
+      /* Offline editing and existing applications remain available. */
+    }
+  }
+  reloadForUpdate() {
+    // saveUI writes drafts synchronously before it updates application state.
+    void applyAppUpdate(this.ownerWindow).catch(() => {
+      this.error(
+        this.state.context.noteId || "unbound",
+        new Error("界面更新失败，输入草稿仍保留。请手动刷新页面。"),
+      );
+    });
   }
   bind(context: Context) {
     const old = this.state.context;
@@ -656,7 +700,7 @@ export class NoteChatController {
       this.accept(
         await this.request(this.url(noteId, id), {
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...CHAT_HEADERS },
           body: JSON.stringify({ title, revision: current.revision }),
         }),
       );
@@ -764,7 +808,7 @@ export class NoteChatController {
         `${this.url(noteId, id)}/turns`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...CHAT_HEADERS },
           signal: abort.signal,
           body: JSON.stringify({
             turnId,

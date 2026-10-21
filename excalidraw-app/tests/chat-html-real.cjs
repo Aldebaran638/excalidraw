@@ -34,6 +34,7 @@ const json = async (url, init) => {
   const send = async (content, workspace) => {
     const response = await fetch(`${base + sessionURL}/turns`, {
       method: "POST",
+      headers: { "X-Chat-Protocol": "2", "X-Chat-Capabilities": "html-blocks" },
       body: JSON.stringify({
         turnId: randomUUID(),
         revision: session.revision,

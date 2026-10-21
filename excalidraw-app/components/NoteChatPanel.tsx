@@ -59,6 +59,17 @@ export const NoteChatPanel = ({
   }
   useEffect(() => {
     void controller.refresh();
+    void controller.checkClientVersion();
+    const win = scroller.current?.ownerDocument.defaultView;
+    const check = () => {
+      void controller.checkClientVersion();
+    };
+    win?.addEventListener("focus", check);
+    const timer = win?.setInterval(check, 60000);
+    return () => {
+      win?.removeEventListener("focus", check);
+      win?.clearInterval(timer);
+    };
   }, [controller]);
   useEffect(() => {
     if (noteId && selected) {
@@ -197,6 +208,18 @@ export const NoteChatPanel = ({
           }
         }}
       >
+        {state.updateAvailable && (
+          <div className="note-chat-inline-error" role="status">
+            新版已就绪。输入草稿已保留；
+            {generating ? (
+              "请在回答结束后刷新。"
+            ) : (
+              <Button onSelect={() => controller.reloadForUpdate()}>
+                刷新界面
+              </Button>
+            )}
+          </div>
+        )}
         {!session?.messages.length && (
           <div className="note-chat-empty">
             <div className="note-chat-empty-mark" aria-hidden="true">
