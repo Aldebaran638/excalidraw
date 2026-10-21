@@ -10,6 +10,7 @@ import { Dialog } from "@excalidraw/excalidraw/components/Dialog";
 
 import { NoteChatMarkdown } from "./NoteChatMarkdown";
 import { ChatWidgetCard } from "./ChatWidgetCard";
+import { ChatWidgetBuildCard } from "./ChatWidgetBuildCard";
 import "./NoteChatPanel.scss";
 
 import type { NoteChatController } from "../data/noteChats";
@@ -83,7 +84,7 @@ export const NoteChatPanel = ({
     if (node && follow.current) {
       node.scrollTop = node.scrollHeight;
     }
-  }, [session?.messages]);
+  }, [session?.messages, state.widgetBuilds]);
   useEffect(() => {
     const ownerWindow = scroller.current?.ownerDocument.defaultView;
     if (!ownerWindow || !noteId) {
@@ -222,13 +223,17 @@ export const NoteChatPanel = ({
               {message.role === "user" ? "你" : "AI"}
               <span>
                 {message.role === "assistant" &&
-                  {
-                    generating: "回答中",
-                    stopped: "已停止",
-                    interrupted: "已中断",
-                    failed: "未完成",
-                    complete: "",
-                  }[message.status]}
+                  (message.artifacts?.length &&
+                  message.status !== "generating" &&
+                  message.status !== "complete"
+                    ? "组件已保存"
+                    : {
+                        generating: "回答中",
+                        stopped: "已停止",
+                        interrupted: "已中断",
+                        failed: "未完成",
+                        complete: "",
+                      }[message.status])}
               </span>
             </div>
             {!!message.activities?.length && (
@@ -296,6 +301,17 @@ export const NoteChatPanel = ({
                   : "")
               }
             />
+            {Object.entries(state.widgetBuilds)
+              .filter(
+                ([, build]) =>
+                  build.noteId === noteId &&
+                  build.sessionId === selected &&
+                  build.turnId === message.turnId &&
+                  message.role === "assistant",
+              )
+              .map(([key, build]) => (
+                <ChatWidgetBuildCard key={key} build={build} />
+              ))}
             {noteId &&
               selected &&
               message.artifacts?.map((ref) => (
@@ -334,7 +350,11 @@ export const NoteChatPanel = ({
               </Button>
             )}
             {message.error && (
-              <p className="note-chat-inline-error">{message.error}</p>
+              <p className="note-chat-inline-error">
+                {message.artifacts?.length
+                  ? `组件已保存，文字回复未完成：${message.error}`
+                  : message.error}
+              </p>
             )}
           </article>
         ))}
@@ -362,11 +382,13 @@ export const NoteChatPanel = ({
               为副本建立独立聊天身份
             </Button>
           )}
-          {noteId && (
-            <Button onSelect={() => void controller.refresh(noteId)}>
-              重新加载会话
-            </Button>
-          )}
+          {noteId &&
+            (!lastAnswer?.artifacts?.length ||
+              controller.isUnsaved(noteId, selected || "")) && (
+              <Button onSelect={() => void controller.refresh(noteId)}>
+                重新加载会话
+              </Button>
+            )}
         </div>
       )}
       {noteId && selected && state.widgetPhases[`${noteId}/${selected}`] && (
@@ -497,7 +519,9 @@ export const NoteChatPanel = ({
                   void controller.send(noteId, selected, lastUser.id)
                 }
               >
-                重试最后一个问题
+                {lastAnswer.artifacts?.length
+                  ? "重试文字回复"
+                  : "重试最后一个问题"}
               </Button>
             )}
           <p className="note-chat-context-hint">

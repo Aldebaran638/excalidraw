@@ -142,12 +142,50 @@ describe("application-owned chat controller", () => {
         ),
       );
     push({ type: "start", session: started });
+    const progress = {
+      generationId: "generation-one",
+      attempt: 1,
+      sequence: 2,
+      phase: "generating" as const,
+      completedNodes: 1,
+    };
+    push({ type: "widget_progress", toolCallId: "call-one", progress });
+    push({
+      type: "widget_progress",
+      toolCallId: "call-one",
+      progress: { ...progress, sequence: 1, completedNodes: 0 },
+    });
+    await vi.waitFor(() =>
+      expect(
+        Object.values(controller.getState().widgetBuilds)[0]?.progress.sequence,
+      ).toBe(2),
+    );
     controller.bind({
       noteId: "other-note-123456",
       name: "b.excalidraw",
       documentSession: 2,
     });
     push({ type: "delta", delta: "不可丢失的回答" });
+    const ref = { artifactId: "artifact-one", version: 1, title: "作品一" };
+    push({ type: "widget_ready", toolCallId: "call-one", artifact: ref });
+    push({
+      type: "widget_progress",
+      toolCallId: "call-one",
+      progress: { ...progress, sequence: 3 },
+    });
+    push({
+      type: "widget_ready",
+      toolCallId: "call-two",
+      artifact: { ...ref, artifactId: "artifact-two", title: "作品二" },
+    });
+    await vi.waitFor(() =>
+      expect(
+        controller
+          .getState()
+          .sessions[`${noteId}/${session.id}`].messages.at(-1)?.artifacts,
+      ).toHaveLength(2),
+    );
+    expect(Object.values(controller.getState().widgetBuilds)).toHaveLength(0);
     push({
       type: "done",
       message: { ...assistant, content: "不可丢失的回答", status: "complete" },

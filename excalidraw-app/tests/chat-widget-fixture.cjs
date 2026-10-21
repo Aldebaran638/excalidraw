@@ -29,7 +29,10 @@ const server = http.createServer(async (req, res) => {
       chunks.push(chunk);
     }
     const body = JSON.parse(Buffer.concat(chunks).toString());
-    if (!body.stream) {
+    if (
+      !body.stream ||
+      body.messages[0].content.startsWith("You design interactive widgets")
+    ) {
       const input = JSON.parse(body.messages[1].content);
       const value = input.currentDefinition || definition();
       if (input.currentDefinition) {
@@ -46,6 +49,21 @@ const server = http.createServer(async (req, res) => {
       }
       if (input.prompt.includes("慢速")) {
         await new Promise((resolve) => setTimeout(resolve, 10000));
+      }
+      if (body.stream) {
+        res.setHeader("Content-Type", "text/event-stream");
+        const text = JSON.stringify(value);
+        const cut = text.indexOf('"id":"a"');
+        const frame = (content, finish_reason = null) =>
+          `data: ${JSON.stringify({
+            choices: [{ delta: { content }, finish_reason }],
+          })}\n\n`;
+        res.write(frame(text.slice(0, cut)));
+        await new Promise((resolve) =>
+          setTimeout(resolve, input.prompt.includes("逐步") ? 15000 : 300),
+        );
+        res.end(`${frame(text.slice(cut), "stop")}data: [DONE]\n\n`);
+        return;
       }
       res.end(
         JSON.stringify({
@@ -69,6 +87,16 @@ const server = http.createServer(async (req, res) => {
         })}\n\n`,
       );
     if (body.messages.at(-1).role === "tool") {
+      if (
+        body.messages.some(
+          (message) =>
+            message.role === "user" && message.content.includes("文字失败"),
+        )
+      ) {
+        res.statusCode = 503;
+        res.end();
+        return;
+      }
       send({ content: "组件候选已准备好，请试用后手动确认。" }, "stop");
     } else {
       const workspace = JSON.parse(

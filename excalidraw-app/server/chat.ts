@@ -187,6 +187,11 @@ export const createChatService = async (
         throw new ChatError(400, "思考开关必须为布尔值");
       }
       const thinking = body.thinking === true;
+      // Honor an explicit tool invocation, not a heuristic classification of
+      // ordinary chat (which may ask for explanations rather than mutations).
+      const explicitWidgetTool = body.content
+        .trim()
+        .match(/^请调用\s*(create_widget_draft|revise_widget_draft)\b/)?.[1];
       let workspace: ChatWorkspace | undefined;
       if (body.workspace) {
         const value = body.workspace;
@@ -231,6 +236,18 @@ export const createChatService = async (
         throw new ChatError(429, "已有两个回答正在生成，请稍后重试");
       }
       const before = await store.read(noteId, sessionId);
+      const retryIndex = body.retryMessageId
+        ? before.messages.findIndex(
+            (message) =>
+              message.id === body.retryMessageId && message.role === "user",
+          )
+        : -1;
+      const retainedArtifacts =
+        retryIndex >= 0
+          ? before.messages
+              .slice(retryIndex + 1)
+              .flatMap((message) => message.artifacts || [])
+          : [];
       const duplicate = before.messages.find(
         (message) =>
           message.turnId === body.turnId && message.role === "assistant",
@@ -295,6 +312,7 @@ export const createChatService = async (
       let dirty = false;
       let idle: ReturnType<typeof setTimeout> | undefined;
       let total: ReturnType<typeof setTimeout> | undefined;
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
       const disconnected = () => {
         if (!res.writableEnded) {
           abort.abort(new Error("连接已中断"));
@@ -359,6 +377,11 @@ export const createChatService = async (
         });
         res.flushHeaders();
         emit({ type: "start", session, message: assistant });
+        heartbeat = setInterval(() => {
+          if (!res.destroyed && !res.writableEnded) {
+            res.write(": heartbeat\n\n");
+          }
+        }, 15000);
         total = setTimeout(
           () => abort.abort(new Error("回答超过三分钟，请缩小问题范围")),
           180000,
@@ -394,7 +417,8 @@ export const createChatService = async (
           if (
             message.role === "assistant" &&
             message.status !== "complete" &&
-            !message.content.trim()
+            !message.content.trim() &&
+            !message.artifacts?.length
           ) {
             continue;
           }
@@ -424,6 +448,14 @@ export const createChatService = async (
           });
         }
         messages.push(...history);
+        if (retainedArtifacts.length) {
+          messages.push({
+            role: "system",
+            content: `本轮只补充文字回复；这些组件已经保存，不得重新创建或修改：${JSON.stringify(
+              retainedArtifacts,
+            )}`,
+          });
+        }
         let calls = 0;
         let readChars = 0;
         let completed = false;
@@ -432,30 +464,6 @@ export const createChatService = async (
             throw new Error("本轮上下文预算已满，请缩小问题范围");
           }
           armIdle(30000);
-          const upstream = await transport(
-            `${config.baseUrl.replace(/\/$/, "")}/chat/completions`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                ...(config.apiKey
-                  ? { Authorization: `Bearer ${config.apiKey}` }
-                  : {}),
-              },
-              signal: abort.signal,
-              body: JSON.stringify({
-                model: config.model,
-                messages,
-                tools: [...NOTE_TOOLS, ...CHAT_WIDGET_TOOLS],
-                stream: true,
-                max_tokens: thinking ? 8192 : 4096,
-                chat_template_kwargs: { enable_thinking: thinking },
-              }),
-            },
-          );
-          if (!upstream.ok || !upstream.body) {
-            throw new Error(`模型服务返回错误 ${upstream.status}`);
-          }
           let content = "";
           let finish: string | null = null;
           const tools = new Map<
@@ -466,77 +474,122 @@ export const createChatService = async (
               function: { name: string; arguments: string };
             }
           >();
-          for await (const event of readSSE(upstream.body)) {
-            armIdle(45000);
-            if (event.data === "[DONE]") {
-              break;
+          if (round === 0 && explicitWidgetTool && !retainedArtifacts.length) {
+            // Explicit commands are dispatched by the host, not attributed to
+            // the model. The shared generator still requests real Qwen output.
+            tools.set(0, {
+              id: `command-${randomUUID()}`,
+              type: "function",
+              function: {
+                name: explicitWidgetTool,
+                arguments: JSON.stringify({ prompt: body.content }),
+              },
+            });
+            finish = "tool_calls";
+          } else {
+            const upstream = await transport(
+              `${config.baseUrl.replace(/\/$/, "")}/chat/completions`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  ...(config.apiKey
+                    ? { Authorization: `Bearer ${config.apiKey}` }
+                    : {}),
+                },
+                signal: abort.signal,
+                body: JSON.stringify({
+                  model: config.model,
+                  messages,
+                  tools: [
+                    ...NOTE_TOOLS,
+                    ...CHAT_WIDGET_TOOLS.filter(
+                      (tool) =>
+                        !retainedArtifacts.length ||
+                        tool.function.name === "read_chat_widget",
+                    ),
+                  ],
+                  stream: true,
+                  max_tokens: thinking ? 8192 : 4096,
+                  chat_template_kwargs: { enable_thinking: thinking },
+                }),
+              },
+            );
+            if (!upstream.ok || !upstream.body) {
+              throw new Error(`模型服务返回错误 ${upstream.status}`);
             }
-            const chunk = JSON.parse(event.data);
-            if (chunk.error) {
-              throw new Error(
-                `模型流式响应失败：${String(
-                  chunk.error.message || "上游服务错误",
-                ).slice(0, 300)}`,
-              );
-            }
-            const choice = chunk.choices?.[0];
-            if (!choice) {
-              continue;
-            }
-            if (choice.finish_reason) {
-              finish = choice.finish_reason;
-            }
-            const delta = choice.delta || {};
-            if (
-              typeof delta.reasoning_content === "string" &&
-              delta.reasoning_content
-            ) {
-              assistant.reasoning =
-                (assistant.reasoning || "") + delta.reasoning_content;
-              dirty = true;
-              if (assistant.reasoning.length > 100000) {
-                throw new Error("思考内容过长，已停止");
+            for await (const event of readSSE(upstream.body)) {
+              armIdle(45000);
+              if (event.data === "[DONE]") {
+                break;
               }
-              emit({ type: "reasoning", delta: delta.reasoning_content });
-            }
-            if (typeof delta.content === "string" && delta.content) {
-              content += delta.content;
-              assistant.content += delta.content;
-              dirty = true;
-              if (assistant.content.length > 100000) {
-                throw new Error("回答过长，已停止");
+              const chunk = JSON.parse(event.data);
+              if (chunk.error) {
+                throw new Error(
+                  `模型流式响应失败：${String(
+                    chunk.error.message || "上游服务错误",
+                  ).slice(0, 300)}`,
+                );
               }
-              emit({ type: "delta", delta: delta.content });
-            }
-            for (const tool of delta.tool_calls || []) {
+              const choice = chunk.choices?.[0];
+              if (!choice) {
+                continue;
+              }
+              if (choice.finish_reason) {
+                finish = choice.finish_reason;
+              }
+              const delta = choice.delta || {};
               if (
-                !Number.isInteger(tool.index) ||
-                tool.index < 0 ||
-                tool.index >= 16
+                typeof delta.reasoning_content === "string" &&
+                delta.reasoning_content
               ) {
-                throw new Error("工具调用索引无效");
+                assistant.reasoning =
+                  (assistant.reasoning || "") + delta.reasoning_content;
+                dirty = true;
+                if (assistant.reasoning.length > 100000) {
+                  throw new Error("思考内容过长，已停止");
+                }
+                emit({ type: "reasoning", delta: delta.reasoning_content });
               }
-              const call = tools.get(tool.index) || {
-                id: "",
-                type: "function" as const,
-                function: { name: "", arguments: "" },
-              };
-              if (tool.id) {
-                call.id = tool.id;
+              if (typeof delta.content === "string" && delta.content) {
+                content += delta.content;
+                assistant.content += delta.content;
+                dirty = true;
+                if (assistant.content.length > 100000) {
+                  throw new Error("回答过长，已停止");
+                }
+                emit({ type: "delta", delta: delta.content });
               }
-              if (tool.function?.name) {
-                call.function.name += tool.function.name;
+              for (const tool of delta.tool_calls || []) {
+                if (
+                  !Number.isInteger(tool.index) ||
+                  tool.index < 0 ||
+                  tool.index >= 16
+                ) {
+                  throw new Error("工具调用索引无效");
+                }
+                const call = tools.get(tool.index) || {
+                  id: "",
+                  type: "function" as const,
+                  function: { name: "", arguments: "" },
+                };
+                if (tool.id) {
+                  call.id = tool.id;
+                }
+                if (tool.function?.name) {
+                  call.function.name += tool.function.name;
+                }
+                if (tool.function?.arguments) {
+                  call.function.arguments += tool.function.arguments;
+                }
+                if (
+                  call.function.arguments.length > 16000 ||
+                  call.function.name.length > 100
+                ) {
+                  throw new Error("工具参数过大");
+                }
+                tools.set(tool.index, call);
               }
-              if (tool.function?.arguments) {
-                call.function.arguments += tool.function.arguments;
-              }
-              if (
-                call.function.arguments.length > 16000 ||
-                call.function.name.length > 100
-              ) {
-                throw new Error("工具参数过大");
-              }
-              tools.set(tool.index, call);
             }
           }
           clearTimeout(idle);
@@ -566,6 +619,7 @@ export const createChatService = async (
               content: content || null,
               tool_calls: toolCalls,
             });
+            let commandFailure = "";
             for (const tool of toolCalls) {
               calls++;
               const activity = {
@@ -634,6 +688,12 @@ export const createChatService = async (
                       Math.max(0, Math.min(8000, 24000 - readChars)),
                     );
                   } else {
+                    if (retainedArtifacts.length) {
+                      throw new ChatError(
+                        400,
+                        "已有组件已保存，本次重试只补充文字回复，不重复生成组件",
+                      );
+                    }
                     let previous: WidgetDocument | null = null;
                     let artifactId: string | undefined;
                     let parentVersion: number | undefined;
@@ -704,7 +764,7 @@ export const createChatService = async (
                         };
                       }
                     }
-                    emit({ type: "widget_start" });
+                    emit({ type: "widget_start", toolCallId: tool.id });
                     clearTimeout(idle);
                     const generated = await generateWidget(
                       config,
@@ -719,6 +779,12 @@ export const createChatService = async (
                       abort.signal,
                       transport,
                       { turnId: body.turnId, toolCallId: tool.id },
+                      (progress) =>
+                        emit({
+                          type: "widget_progress",
+                          toolCallId: tool.id,
+                          progress,
+                        }),
                     );
                     if (abort.signal.aborted) {
                       throw abort.signal.reason;
@@ -749,7 +815,11 @@ export const createChatService = async (
                     assistant.artifacts = [...(assistant.artifacts || []), ref];
                     dirty = true;
                     await persist();
-                    emit({ type: "widget_ready", artifact: ref });
+                    emit({
+                      type: "widget_ready",
+                      artifact: ref,
+                      toolCallId: tool.id,
+                    });
                     result = {
                       artifact: ref,
                       summary: data.summary,
@@ -769,6 +839,9 @@ export const createChatService = async (
                   );
                 }
               } catch (error) {
+                if (tool.function.name === explicitWidgetTool) {
+                  commandFailure = (error as Error).message;
+                }
                 if (
                   CHAT_WIDGET_TOOLS.some(
                     (entry) => entry.function.name === tool.function.name,
@@ -776,6 +849,7 @@ export const createChatService = async (
                 ) {
                   emit({
                     type: "widget_error",
+                    toolCallId: tool.id,
                     error: (error as Error).message,
                   });
                 }
@@ -834,6 +908,19 @@ export const createChatService = async (
               emit({ type: "tool_end", activity });
               dirty = true;
             }
+            if (
+              round === 0 &&
+              explicitWidgetTool &&
+              !retainedArtifacts.length
+            ) {
+              if (commandFailure) {
+                throw new Error(commandFailure);
+              }
+              // A saved card is the authoritative command result. Do not spend
+              // another model request merely to invent a success confirmation.
+              completed = true;
+              break;
+            }
           } else {
             if (finish !== "stop") {
               throw new Error(
@@ -867,6 +954,7 @@ export const createChatService = async (
         }
       } finally {
         clearInterval(saveTimer);
+        clearInterval(heartbeat);
         clearTimeout(total);
         clearTimeout(idle);
         await pendingSave;

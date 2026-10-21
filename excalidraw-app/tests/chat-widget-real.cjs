@@ -63,6 +63,12 @@ const json = async (url, init) => {
       return line ? [JSON.parse(line.slice(6))] : [];
     });
     const ready = events.find((event) => event.type === "widget_ready");
+    const previewIndex = events.findIndex(
+      (event) =>
+        event.type === "widget_progress" &&
+        event.progress?.phase === "generating" &&
+        event.progress.document,
+    );
     assert.ok(
       ready,
       JSON.stringify(
@@ -70,6 +76,10 @@ const json = async (url, init) => {
           ["error", "widget_error", "done"].includes(event.type),
         ),
       ),
+    );
+    assert.ok(
+      previewIndex >= 0 && previewIndex < events.indexOf(ready),
+      "Real Qwen must stream a valid preview before artifact readiness",
     );
     assert.equal(events.at(-1)?.saved, true);
     const data = await json(
@@ -82,6 +92,12 @@ const json = async (url, init) => {
         artifact: ready.artifact,
         textDeltas: events.filter((event) => event.type === "delta").length,
         saved: events.at(-1).saved,
+        answerStatus: events.at(-1).message?.status,
+        replyError: events.find((event) => event.type === "error")?.error,
+        streamedPreviews: events.filter(
+          (event) =>
+            event.type === "widget_progress" && event.progress?.document,
+        ).length,
       }),
     );
     return data;

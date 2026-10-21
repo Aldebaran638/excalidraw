@@ -10,3 +10,7 @@
 
 - Keep the daily service on port 3001 untouched unless explicitly requested. Use one fixed preview port, 3009, for both development and production acceptance; do not leave parallel application previews on 3002–3008 or allocate additional preview ports. Stop the previous preview before replacing it, and preserve its notes and chat storage.
 - `docker-compose.preview.yml` requires an explicit isolated `PREVIEW_NOTES_DIR`; never point destructive acceptance scripts at the user's daily notes. Unit-test ephemeral ports and private upstream fixture ports are not application previews.
+
+## Local version management
+
+- The user delegates local commit and branch organization to the agent. Keep `aldebaran` as the integration branch; develop substantial modules on short-lived `feat/*` branches and fast-forward merge only after acceptance. Commit related, independently runnable changes together. Do not push, rewrite existing commits, or include user note/plan edits by default. Record baseline and feature commit IDs in the handoff.

@@ -415,6 +415,29 @@
       }
     }
   }
+  .note-chat-widget-build {
+    border-style: dashed;
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px;
+      background: var(--color-surface-low);
+      span {
+        flex-shrink: 0;
+        color: var(--color-on-surface-variant);
+      }
+    }
+    > p {
+      padding-inline: 12px;
+      font-size: 12px;
+    }
+    .note-chat-widget-build-view {
+      max-height: 360px;
+      overflow: auto;
+      pointer-events: none;
+    }
+  }
   .note-chat-latest {
     align-self: center;
     position: static;

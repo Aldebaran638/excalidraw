@@ -29,3 +29,9 @@ node excalidraw-app/tests/note-chat-display.cjs
 ```
 
 先将预览挂载到该独立测试目录，再运行验收；不要将自动化验收指向日常或正在使用的预览笔记。验收后挂回原来的预览目录。单元测试的临时端口和按需运行的上游模拟接口不是额外的应用预览服务，测试结束后应释放。
+
+## 聊天组件流式验收
+
+模拟模型：在独立验收容器内运行 `excalidraw-app/tests/chat-widget-fixture.cjs`，上游配置为容器自身的 `http://127.0.0.1:3304/v1`，模型为 `fixture-widgets`，不发布 3304 到宿主。运行 `chat-widget-stream-browser.cjs`，它会验证完整响应结束前出现真实节点、预览不可操作、正文失败后作品保留、刷新和主题/窄屏表现。`chat-widget-browser.cjs` 覆盖版本、试用、导入及画布历史回归。
+
+真实 Qwen：恢复真实上游及模型配置后，`chat-widget-real.cjs` 在独立笔记目录验收工具调用、流式预览及版本修改。`widget-generation-real.ts` 可直接验证共享生成器的真实流式输出，不写笔记和聊天。模拟模型成功不代表真实模型成功。验收结束后重新创建预览容器，恢复原笔记挂载及真实模型配置，停止容器内模拟接口。

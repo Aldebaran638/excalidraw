@@ -1,4 +1,5 @@
 import type { ChatWidgetRef } from "./chatWidgets";
+import type { WidgetGenerationProgress } from "../../packages/interactive-widgets/streamPreview";
 
 export type ChatStatus =
   | "generating"
@@ -52,6 +53,7 @@ export type ChatEvent = {
     | "delta"
     | "reasoning"
     | "widget_start"
+    | "widget_progress"
     | "widget_ready"
     | "widget_error"
     | "tool_start"
@@ -68,4 +70,6 @@ export type ChatEvent = {
   error?: string;
   saved?: boolean;
   artifact?: ChatWidgetRef;
+  progress?: WidgetGenerationProgress;
+  toolCallId?: string;
 };

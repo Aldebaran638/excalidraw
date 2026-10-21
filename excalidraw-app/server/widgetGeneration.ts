@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 
+import { readSSE } from "../data/sse";
+import { previewFromJSONPrefix } from "../../packages/interactive-widgets/streamPreview";
+
 import {
   CATALOG,
   ICONS,
@@ -24,6 +27,7 @@ import type {
   WidgetState,
 } from "../../packages/interactive-widgets/types";
 import type { AIConfig } from "./ai";
+import type { WidgetGenerationProgress } from "../../packages/interactive-widgets/streamPreview";
 export type WidgetGenerationInput = {
   prompt: string;
   context?: unknown[];
@@ -44,6 +48,7 @@ export const generateWidget = async (
   parentSignal: AbortSignal,
   transport: typeof fetch = fetch,
   diagnosticContext: { turnId?: string; toolCallId?: string } = {},
+  onProgress?: (progress: WidgetGenerationProgress) => void,
 ) => {
   if (
     !input ||
@@ -101,6 +106,7 @@ export const generateWidget = async (
     );
   };
   log("started");
+  const sequence = { value: 0 };
   try {
     const messages: { role: string; content: string }[] = [
       {
@@ -157,6 +163,26 @@ export const generateWidget = async (
     let lastError = "";
     for (let attempt = 0; attempt < 2; attempt++) {
       log("attempt_started", { attempt: attempt + 1 });
+      let content = "";
+      let finish: string | undefined;
+      let lastPreviewAt = 0;
+      const progress = (
+        phase: WidgetGenerationProgress["phase"],
+        preview = false,
+      ) => {
+        if (!onProgress) {
+          return;
+        }
+        const partial = preview ? previewFromJSONPrefix(content) : null;
+        onProgress({
+          generationId,
+          attempt: attempt + 1,
+          sequence: ++sequence.value,
+          phase,
+          ...(partial || { completedNodes: 0 }),
+        });
+      };
+      progress(attempt ? "repairing" : "waiting");
       const response = await transport(
         `${config.baseUrl.replace(/\/$/, "")}/chat/completions`,
         {
@@ -166,7 +192,7 @@ export const generateWidget = async (
           body: JSON.stringify({
             model: config.model,
             messages,
-            stream: false,
+            stream: Boolean(onProgress),
             max_tokens: 8192,
             temperature: 0.2,
             chat_template_kwargs: { enable_thinking: input.thinking === true },
@@ -176,16 +202,66 @@ export const generateWidget = async (
       if (!response.ok) {
         throw new Error(`模型服务返回错误 ${response.status}`);
       }
-      const result = (await response.json()) as {
-        choices?: {
-          message?: { content?: string };
-          finish_reason?: string;
-        }[];
-      };
-      const content = result.choices?.[0]?.message?.content || "";
-      if (result.choices?.[0]?.finish_reason === "length") {
-        throw new Error("生成内容超过模型输出上限，请减少组件内容");
+      if (signal.aborted) {
+        throw signal.reason;
       }
+      if (
+        onProgress &&
+        response.headers.get("content-type")?.includes("text/event-stream")
+      ) {
+        if (!response.body) {
+          throw new Error("组件生成流为空");
+        }
+        for await (const frame of readSSE(response.body)) {
+          if (signal.aborted) {
+            throw signal.reason;
+          }
+          if (frame.data === "[DONE]") {
+            break;
+          }
+          const chunk = JSON.parse(frame.data);
+          if (chunk.error) {
+            throw new Error(
+              `组件生成流失败：${String(
+                chunk.error.message || "上游错误",
+              ).slice(0, 300)}`,
+            );
+          }
+          const choice = chunk.choices?.[0];
+          if (choice?.finish_reason) {
+            finish = choice.finish_reason;
+          }
+          if (typeof choice?.delta?.content === "string") {
+            content += choice.delta.content;
+            if (content.length > 262144) {
+              throw new Error("组件定义过大");
+            }
+            if (Date.now() - lastPreviewAt >= 150) {
+              progress("generating", true);
+              lastPreviewAt = Date.now();
+            }
+          }
+        }
+        if (finish !== "stop") {
+          throw new Error(
+            finish === "length"
+              ? "生成内容超过模型输出上限，请减少组件内容"
+              : "组件生成连接提前结束，未完成内容不能导入",
+          );
+        }
+      } else {
+        const result = (await response.json()) as {
+          choices?: {
+            message?: { content?: string };
+            finish_reason?: string;
+          }[];
+        };
+        content = result.choices?.[0]?.message?.content || "";
+        if (result.choices?.[0]?.finish_reason === "length") {
+          throw new Error("生成内容超过模型输出上限，请减少组件内容");
+        }
+      }
+      progress("validating", true);
       try {
         const cleaned = content
           .trim()
@@ -236,6 +312,7 @@ export const generateWidget = async (
     throw error;
   } finally {
     clearTimeout(timeout);
+    controller.abort();
     parentSignal.removeEventListener("abort", cancel);
   }
 };

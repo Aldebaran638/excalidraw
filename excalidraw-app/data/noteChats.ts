@@ -12,6 +12,7 @@ import type {
   ChatWidgetRef,
 } from "./chatWidgets";
 import type { WidgetState } from "../../packages/interactive-widgets/types";
+import type { WidgetGenerationProgress } from "../../packages/interactive-widgets/streamPreview";
 
 import type {
   ChatEvent,
@@ -19,6 +20,15 @@ import type {
   ChatSummary,
   NoteSnapshot,
 } from "./chatTypes";
+
+export type ChatWidgetBuild = {
+  noteId: string;
+  sessionId: string;
+  turnId: string;
+  toolCallId: string;
+  progress: WidgetGenerationProgress;
+  error?: string;
+};
 
 type BrowserWindow = Window & typeof globalThis;
 type Context = {
@@ -46,6 +56,7 @@ type State = {
   artifactErrors: Record<string, string>;
   widgetPhases: Record<string, string>;
   placing: string | null;
+  widgetBuilds: Record<string, ChatWidgetBuild>;
 };
 const blankUI = (): UI => ({ selected: null, drafts: {}, scrolls: {} });
 export class NoteChatController {
@@ -61,6 +72,7 @@ export class NoteChatController {
     artifactErrors: {},
     widgetPhases: {},
     placing: null,
+    widgetBuilds: {},
   };
   private listeners = new Set<() => void>();
   private frame: number | null = null;
@@ -76,6 +88,7 @@ export class NoteChatController {
     string,
     Promise<ChatWidgetData | undefined>
   >();
+  private completedBuilds = new Set<string>();
   private active = new Map<
     string,
     { turnId: string; abort: AbortController }
@@ -776,9 +789,66 @@ export class NoteChatController {
         if (event.session) {
           this.accept(event.session, true);
         }
+        const buildKey = `${key}/${turnId}/${event.toolCallId}`;
+        if (
+          event.type === "widget_progress" &&
+          event.progress &&
+          event.toolCallId
+        ) {
+          const previous = this.state.widgetBuilds[buildKey];
+          if (this.completedBuilds.has(buildKey)) {
+            continue;
+          }
+          const progress = event.progress;
+          if (
+            previous &&
+            (previous.error ||
+              previous.progress.generationId !== progress.generationId ||
+              previous.progress.sequence >= progress.sequence)
+          ) {
+            continue;
+          }
+          this.state.widgetBuilds = {
+            ...this.state.widgetBuilds,
+            [buildKey]: {
+              noteId,
+              sessionId: id,
+              turnId,
+              toolCallId: event.toolCallId,
+              progress: {
+                ...progress,
+                document:
+                  progress.document ||
+                  (previous?.progress.attempt === progress.attempt
+                    ? previous.progress.document
+                    : undefined),
+              },
+            },
+          };
+          this.emit(true);
+        }
         if (
           ["widget_start", "widget_ready", "widget_error"].includes(event.type)
         ) {
+          if (event.toolCallId && event.type === "widget_ready") {
+            this.completedBuilds.add(buildKey);
+            const { [buildKey]: removed, ...remaining } =
+              this.state.widgetBuilds;
+            this.state.widgetBuilds = remaining;
+          }
+          if (
+            event.type === "widget_error" &&
+            this.state.widgetBuilds[buildKey]
+          ) {
+            this.completedBuilds.add(buildKey);
+            this.state.widgetBuilds = {
+              ...this.state.widgetBuilds,
+              [buildKey]: {
+                ...this.state.widgetBuilds[buildKey],
+                error: event.error || "组件生成失败",
+              },
+            };
+          }
           this.state.widgetPhases = {
             ...this.state.widgetPhases,
             [key]:
@@ -808,7 +878,17 @@ export class NoteChatController {
                   ...session,
                   messages: session.messages.map((message) =>
                     message.turnId === turnId && message.role === "assistant"
-                      ? { ...message, artifacts: [event.artifact!] }
+                      ? {
+                          ...message,
+                          artifacts: [
+                            ...(message.artifacts || []).filter(
+                              (ref) =>
+                                ref.artifactId !== event.artifact!.artifactId ||
+                                ref.version !== event.artifact!.version,
+                            ),
+                            event.artifact!,
+                          ],
+                        }
                       : message,
                   ),
                 },
@@ -857,7 +937,14 @@ export class NoteChatController {
           this.accept(next, true);
         }
         if (event.type === "error") {
-          this.error(key, new Error(event.error || "回答中断"));
+          this.error(
+            key,
+            new Error(
+              event.saved && event.message?.artifacts?.length
+                ? `组件已保存，文字回复未完成：${event.error || "回答中断"}`
+                : event.error || "回答中断",
+            ),
+          );
         }
         if (event.type === "done") {
           terminal = true;
@@ -896,6 +983,20 @@ export class NoteChatController {
       }
       this.error(key, error);
     } finally {
+      this.state.widgetBuilds = Object.fromEntries(
+        Object.entries(this.state.widgetBuilds).map(([buildKey, build]) => [
+          buildKey,
+          build.noteId === noteId &&
+          build.sessionId === id &&
+          build.turnId === turnId
+            ? {
+                ...build,
+                error:
+                  build.error || "生成已结束，未通过最终校验的预览不能导入",
+              }
+            : build,
+        ]),
+      );
       if (this.state.widgetPhases[key]?.startsWith("正在")) {
         this.state.widgetPhases = { ...this.state.widgetPhases, [key]: "" };
       }

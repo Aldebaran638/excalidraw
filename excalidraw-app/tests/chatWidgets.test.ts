@@ -133,7 +133,10 @@ describe("chat widget drafts", () => {
     let generated = 0;
     const transport = vi.fn(async (_url, options) => {
       const request = JSON.parse(options!.body as string);
-      if (!request.stream) {
+      if (
+        !request.stream ||
+        request.messages[0].content.startsWith("You design interactive widgets")
+      ) {
         generated++;
         expect(request.chat_template_kwargs.enable_thinking).toBe(true);
         if (generated === 2) {
@@ -157,6 +160,7 @@ describe("chat widget drafts", () => {
         );
       }
       if (request.messages.at(-1).role === "tool") {
+        expect(request.tool_choice).toBeUndefined();
         expect(request.messages.at(-1).content.length).toBeLessThan(1500);
         return stream({ content: "请试用后手动导入。" });
       }
@@ -193,7 +197,9 @@ describe("chat widget drafts", () => {
         method: "POST",
         body: JSON.stringify({
           turnId: randomUUID(),
-          content: "请生成组件",
+          content: workspace
+            ? "请调用 revise_widget_draft 修改组件"
+            : "请调用 create_widget_draft 生成组件",
           revision,
           thinking: true,
           snapshot,
@@ -242,6 +248,15 @@ describe("chat widget drafts", () => {
     ).toBe(409);
     stored = await (await fetch(base)).json();
     expect(stored.messages).toHaveLength(4);
+    expect(
+      vi
+        .mocked(transport)
+        .mock.calls.every(([, options]) =>
+          JSON.parse(options!.body as string).messages[0].content.startsWith(
+            "You design interactive widgets",
+          ),
+        ),
+    ).toBe(true);
   });
   it("allows a same-turn retry after invalid output and its automatic repair both fail", async () => {
     const { directory, noteId, session } = await fixture();
@@ -249,7 +264,10 @@ describe("chat widget drafts", () => {
     let toolRounds = 0;
     const transport = vi.fn(async (_url, options) => {
       const request = JSON.parse(options!.body as string);
-      if (!request.stream) {
+      if (
+        !request.stream ||
+        request.messages[0].content.startsWith("You design interactive widgets")
+      ) {
         generations++;
         return new Response(
           JSON.stringify({
@@ -331,9 +349,29 @@ describe("chat widget drafts", () => {
   it("allows multiple artifacts in one turn and preserves them if the following answer fails", async () => {
     const { directory, noteId, session } = await fixture();
     let generations = 0;
+    let retrying = false;
     const transport = vi.fn(async (_url, options) => {
       const request = JSON.parse(options!.body as string);
-      if (!request.stream) {
+      if (retrying) {
+        expect(
+          request.tools.some(
+            (tool: { function: { name: string } }) =>
+              tool.function.name === "create_widget_draft",
+          ),
+        ).toBe(false);
+        expect(
+          request.messages.some(
+            (message: { role: string; content: string }) =>
+              message.role === "assistant" &&
+              message.content.includes("本会话组件引用"),
+          ),
+        ).toBe(true);
+        return stream({ content: "已有组件已保存，这里补充使用说明。" });
+      }
+      if (
+        !request.stream ||
+        request.messages[0].content.startsWith("You design interactive widgets")
+      ) {
         generations++;
         return new Response(
           JSON.stringify({
@@ -400,13 +438,34 @@ describe("chat widget drafts", () => {
         (await fetch(`${base}/artifacts/${ref.artifactId}?version=1`)).status,
       ).toBe(200);
     }
+    retrying = true;
+    const retry = await fetch(`${base}/turns`, {
+      method: "POST",
+      body: JSON.stringify({
+        turnId: randomUUID(),
+        content: "生成",
+        revision: stored.revision,
+        retryMessageId: stored.messages[0].id,
+        snapshot: { capturedAt: 2, elements: [] },
+      }),
+    });
+    await retry.text();
+    expect(generations).toBe(2);
+    const retried: ChatSession = await (await fetch(base)).json();
+    expect(retried.messages).toHaveLength(3);
+    expect(retried.messages.at(-1)?.status).toBe("complete");
   });
   it("cancels nested generation without publishing a partial artifact", async () => {
     const { directory, noteId, session } = await fixture();
     let generating = false;
     const transport = vi.fn(async (_url, options) => {
       const request = JSON.parse(options!.body as string);
-      if (request.stream) {
+      if (
+        request.stream &&
+        !request.messages[0].content.startsWith(
+          "You design interactive widgets",
+        )
+      ) {
         return stream(
           {
             tool_calls: [
@@ -455,6 +514,74 @@ describe("chat widget drafts", () => {
     const stored: ChatSession = await (await fetch(base)).json();
     expect(stored.messages[1].status).toBe("stopped");
     expect(stored.messages[1].artifacts).toBeUndefined();
+  });
+  it("never publishes ready or a usable artifact if saving the generated candidate fails", async () => {
+    const { directory, noteId, session } = await fixture();
+    const save = vi
+      .spyOn(ChatArtifactStore.prototype, "create")
+      .mockRejectedValue(new Error("候选写入失败"));
+    try {
+      const transport = vi.fn(async (_url, options) => {
+        const request = JSON.parse(options!.body as string);
+        if (
+          request.messages[0].content.startsWith(
+            "You design interactive widgets",
+          )
+        ) {
+          return new Response(
+            JSON.stringify({
+              choices: [
+                { message: { content: JSON.stringify(doc().definition) } },
+              ],
+            }),
+          );
+        }
+        if (request.messages.at(-1).role === "tool") {
+          return stream({ content: "候选未保存，请重试。" });
+        }
+        return stream(
+          {
+            tool_calls: [
+              {
+                index: 0,
+                id: "disk-failed",
+                function: {
+                  name: "create_widget_draft",
+                  arguments: JSON.stringify({ prompt: "生成" }),
+                },
+              },
+            ],
+          },
+          "tool_calls",
+        );
+      }) as typeof fetch;
+      const base = `${await serve(
+        directory,
+        transport,
+      )}/api/notes/${noteId}/chats/${session.id}`;
+      const response = await fetch(`${base}/turns`, {
+        method: "POST",
+        body: JSON.stringify({
+          turnId: randomUUID(),
+          content: "生成",
+          revision: 0,
+          snapshot: { capturedAt: 1, elements: [] },
+        }),
+      });
+      const events: ChatEvent[] = [];
+      for await (const frame of readSSE(response.body!)) {
+        events.push(JSON.parse(frame.data));
+      }
+      expect(events.some((event) => event.type === "widget_ready")).toBe(false);
+      expect(
+        events.find((event) => event.type === "widget_error")?.error,
+      ).toContain("写入失败");
+      expect(
+        (await (await fetch(base)).json()).messages.at(-1).artifacts,
+      ).toBeUndefined();
+    } finally {
+      save.mockRestore();
+    }
   });
   it("rejects cross-session workspace and non-widget canvas targets before making an upstream request", async () => {
     const { directory, noteId, session } = await fixture();
