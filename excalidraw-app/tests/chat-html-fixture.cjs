@@ -8,6 +8,17 @@ let count=NoteApp.get('count',0);function todos(){document.getElementById('todos
 ['pod','service'].forEach(id=>document.getElementById(id).onclick=()=>{document.getElementById('explanation').textContent=id==='pod'?'Pod 运行应用容器':'Service 为 Pod 提供稳定访问入口';document.getElementById(id).classList.toggle('selected')});
 document.getElementById('transpose').onclick=()=>{const m=document.getElementById('matrix').value.split(';').map(r=>r.split(','));document.getElementById('matrix-result').textContent=m[0].map((_,i)=>m.map(r=>r[i]).join(',')).join(';')};
 </script></body></html>`;
+const early = `<main id="app" class="col"><h2 id="title">专注工具</h2><label for="task">当前任务</label><input id="task" placeholder="今天想完成什么？"><button id="start">开始专注</button><output id="remaining"></output></main><script>(()=>{
+  const draw=()=>{document.getElementById('remaining').textContent=NoteApp.get('deadline',0)>Date.now()?'计时中':'准备就绪'};
+  NoteApp.once('app',()=>{window.initializations=(window.initializations||0)+1});
+  NoteApp.on('start','app','click','#start',()=>{NoteApp.set('deadline',Date.now()+60000);draw()});
+  NoteApp.interval('clock',draw,200);draw();
+})()</script>`;
+const late = `<script>(()=>{
+  NoteApp.patch('title',{text:'小番茄 · Focus'});
+  NoteApp.patch('app',{style:{'--accent':'#3b9a74',gap:'16px'},appendHtml:'<p id="detail" class="muted">放下干扰，让注意力回到当下。</p>'});
+  NoteApp.patch('app',{text:'这一更新会清空输入，因此应被拒绝'});
+})()</script>`;
 const server = http.createServer(async (req, res) => {
   if (req.url === "/v1/models") {
     res.setHeader("Content-Type", "application/json");
@@ -27,9 +38,9 @@ const server = http.createServer(async (req, res) => {
   emit({ reasoning_content: "先安排可交互布局。" });
   emit({ content: "这是可以直接操作的应用。\n```html\n" });
   const cut = source.indexOf("<script>");
-  emit({ content: source.slice(0, cut) });
+  emit({ content: process.env.FIXTURE_V2 ? early : source.slice(0, cut) });
   const timer = setTimeout(() => {
-    emit({ content: source.slice(cut) });
+    emit({ content: process.env.FIXTURE_V2 ? late : source.slice(cut) });
     emit({ content: "\n```\n" });
     emit({ reasoning_content: "界面与交互代码已给出。" });
     emit({ content: "可以修改参数、增加事项，或选择节点。" }, "stop");
@@ -37,4 +48,7 @@ const server = http.createServer(async (req, res) => {
   }, 7000);
   res.on("close", () => clearTimeout(timer));
 });
-server.listen(Number(process.env.FIXTURE_PORT || 3304), "127.0.0.1");
+server.listen(
+  Number(process.env.FIXTURE_PORT || 3304),
+  process.env.FIXTURE_HOST || "127.0.0.1",
+);

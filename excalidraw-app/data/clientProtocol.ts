@@ -1,5 +1,5 @@
 export const CHAT_PROTOCOL_VERSION = 2;
-export const HTML_RUNTIME_VERSION = 1;
+export const HTML_RUNTIME_VERSION = 2;
 export const CHAT_HEADERS = {
   "X-Chat-Protocol": String(CHAT_PROTOCOL_VERSION),
   "X-Chat-Capabilities": "html-blocks",

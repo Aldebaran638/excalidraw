@@ -36,6 +36,7 @@ export const ChatHtmlCard = ({
   const [restart, setRestart] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [patchWarnings, setPatchWarnings] = useState<string[]>([]);
   const state = useRef<HtmlState>(
     block.initialState || { forms: {}, custom: {} },
   );
@@ -114,6 +115,15 @@ export const ChatHtmlCard = ({
     if (!shouldRun) {
       return;
     }
+    const runtimeVersion = block.runtimeVersion || data?.runtimeVersion || 1;
+    if (
+      !Number.isSafeInteger(runtimeVersion) ||
+      runtimeVersion < 1 ||
+      runtimeVersion > HTML_RUNTIME_VERSION
+    ) {
+      setError("此应用的运行时版本不受支持，源码已保留；请更新界面。");
+      return;
+    }
     const node = root.current!;
     const doc = node.ownerDocument;
     const win = doc.defaultView!;
@@ -156,13 +166,15 @@ export const ChatHtmlCard = ({
       const snapshot = JSON.parse(JSON.stringify(state.current));
       saving.current = saving.current
         .then(async () => {
+          const body = JSON.stringify({
+            revision: revision.current,
+            state: snapshot,
+          });
           const response = await win.fetch(endpoint, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              revision: revision.current,
-              state: snapshot,
-            }),
+            body,
+            keepalive: new win.TextEncoder().encode(body).length < 60000,
           });
           const value = await response.json();
           if (!response.ok) {
@@ -197,6 +209,14 @@ export const ChatHtmlCard = ({
         }
       } else if (event.data.type === "error") {
         setError(`运行出错：${String(event.data.data).slice(0, 500)}`);
+      } else if (event.data.type === "patch_rejected") {
+        const warning = `${String(event.data.data?.targetId || "").slice(
+          0,
+          200,
+        )}：${String(event.data.data?.reason || "更新未应用").slice(0, 300)}`;
+        setPatchWarnings((warnings) =>
+          [...new Set([...warnings, warning])].slice(-20),
+        );
       } else if (event.data.type === "state") {
         const value = event.data.data;
         if (!isHtmlState(value)) {
@@ -210,16 +230,22 @@ export const ChatHtmlCard = ({
       }
     };
     win.addEventListener("message", receive);
+    win.addEventListener("pagehide", save);
     frame.current = iframe;
     node.appendChild(iframe);
-    iframe.srcdoc = htmlBootstrap(token.current, state.current);
+    iframe.srcdoc = htmlBootstrap(token.current, state.current, runtimeVersion);
     return () => {
       disposed = true;
       win.clearTimeout(bootTimer);
       win.clearTimeout(timer);
       save();
       win.removeEventListener("message", receive);
+      win.removeEventListener("pagehide", save);
       observer.disconnect();
+      iframe.contentWindow?.postMessage(
+        { token: token.current, type: "dispose" },
+        "*",
+      );
       iframe.remove();
       frame.current = null;
     };
@@ -278,6 +304,16 @@ export const ChatHtmlCard = ({
           {error}
         </p>
       )}
+      {patchWarnings.length > 0 && (
+        <details className="note-chat-inline-error">
+          <summary>部分更新未应用，已保留你的操作</summary>
+          <ul>
+            {patchWarnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </details>
+      )}
       <footer>
         <Button
           onSelect={() => {
@@ -294,6 +330,7 @@ export const ChatHtmlCard = ({
         <Button
           onSelect={() => {
             setError("");
+            setPatchWarnings([]);
             setRunning(true);
             setRestart(restart + 1);
           }}
@@ -327,7 +364,7 @@ export const ChatHtmlCard = ({
         <summary>版本信息</summary>
         <small>
           应用 {block.ref.artifactId} · v{block.ref.version} · 运行时{" "}
-          {data?.runtimeVersion || 1}
+          {block.runtimeVersion || data?.runtimeVersion || 1}
           <br />
           当前界面 {controller.getState().clientInfo?.loadedEntry || "待核对"}
           <br />

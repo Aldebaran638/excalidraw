@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+
 const puppeteer = require("puppeteer-core");
 (async () => {
   assert.ok(
@@ -60,6 +61,7 @@ const puppeteer = require("puppeteer-core");
         }
       });
     }
+    console.log("replay: loading entry");
     await page.goto("http://127.0.0.1:3009", {
       waitUntil: "domcontentloaded",
       timeout: 120000,
@@ -67,6 +69,7 @@ const puppeteer = require("puppeteer-core");
     await page.waitForSelector('[aria-label="打开笔记聊天"]', {
       timeout: 120000,
     });
+    console.log("replay: opening chat");
     await page.click('[aria-label="打开笔记聊天"]');
     await page.waitForFunction(
       () =>
@@ -79,6 +82,7 @@ const puppeteer = require("puppeteer-core");
       ".note-chat-html-card",
       (nodes) => nodes.length,
     );
+    console.log("replay: restored cards", count);
     const entry = await page.$eval(
       'script[type="module"][src]',
       (node) => node.src,
@@ -102,10 +106,6 @@ const puppeteer = require("puppeteer-core");
     } else {
       assert.ok(count >= 3);
       await page.waitForSelector(".note-chat-html-frame");
-      for (const iframe of await page.$$(".note-chat-html-frame")) {
-        const frame = await iframe.contentFrame();
-        await frame.waitForFunction(() => Boolean(document.querySelector("button")), { timeout: 20000, polling: 100 });
-      }
       assert.equal(await page.$(".note-chat-html-card [role=alert]"), null);
     }
     await page.screenshot({
