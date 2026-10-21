@@ -1,4 +1,5 @@
 import type { ChatWidgetRef } from "./chatWidgets";
+import type { ChatBlock } from "./chatHtml";
 import type { WidgetGenerationProgress } from "../../packages/interactive-widgets/streamPreview";
 
 export type ChatStatus =
@@ -27,6 +28,7 @@ export type ChatMessage = {
   createdAt: number;
   status: ChatStatus;
   activities?: ChatActivity[];
+  blocks?: ChatBlock[];
   error?: string;
 };
 export type ChatSession = {
@@ -50,6 +52,7 @@ export type NoteSnapshot = {
 export type ChatEvent = {
   type:
     | "start"
+    | "block"
     | "delta"
     | "reasoning"
     | "widget_start"
@@ -60,6 +63,9 @@ export type ChatEvent = {
     | "tool_end"
     | "done"
     | "error";
+  block?: ChatBlock;
+  blockDelta?: string;
+  sequence?: number;
   noteId: string;
   sessionId: string;
   turnId: string;

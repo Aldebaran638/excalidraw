@@ -89,6 +89,7 @@ export class NoteChatController {
     Promise<ChatWidgetData | undefined>
   >();
   private completedBuilds = new Set<string>();
+  private blockSequences = new Map<string, number>();
   private active = new Map<
     string,
     { turnId: string; abort: AbortController }
@@ -490,6 +491,28 @@ export class NoteChatController {
   }
   private accept(session: ChatSession, batched = false) {
     const key = `${session.noteId}/${session.id}`;
+    const previous = this.state.sessions[key];
+    session = {
+      ...session,
+      messages: session.messages.map((message) => {
+        const old = previous?.messages.find((entry) => entry.id === message.id);
+        return !message.blocks
+          ? message
+          : {
+              ...message,
+              blocks: message.blocks.map((block) => {
+                const prior = old?.blocks?.find(
+                  (entry) => entry.id === block.id,
+                );
+                return block.type === "html" &&
+                  prior?.type === "html" &&
+                  block.source === undefined
+                  ? { ...block, source: prior.source }
+                  : block;
+              }),
+            };
+      }),
+    };
     this.state.sessions = { ...this.state.sessions, [key]: session };
     const { messages, ...summary } = session;
     const list = this.state.lists[session.noteId] || [];
@@ -902,7 +925,17 @@ export class NoteChatController {
           this.setDraft(noteId, id, "");
         }
         const current = this.state.sessions[key];
-        if (current && (event.delta || event.activity || event.message)) {
+        if (event.block && event.sequence) {
+          const sequenceKey = `${key}/${turnId}`;
+          if (event.sequence <= (this.blockSequences.get(sequenceKey) || 0)) {
+            continue;
+          }
+          this.blockSequences.set(sequenceKey, event.sequence);
+        }
+        if (
+          current &&
+          (event.delta || event.activity || event.message || event.block)
+        ) {
           const next = {
             ...current,
             messages: current.messages.map((message) => {
@@ -910,7 +943,54 @@ export class NoteChatController {
                 return message;
               }
               if (event.message) {
+                // Terminal messages deliberately do not persist streaming source in chat JSON.
+                if (event.message.blocks) {
+                  return {
+                    ...event.message,
+                    blocks: event.message.blocks.map((block) => {
+                      const old = message.blocks?.find(
+                        (entry) => entry.id === block.id,
+                      );
+                      return block.type === "html" && old?.type === "html"
+                        ? { ...block, source: old.source }
+                        : block;
+                    }),
+                  };
+                }
                 return event.message;
+              }
+              if (event.block) {
+                const blocks = [...(message.blocks || [])];
+                const index = blocks.findIndex(
+                  (block) => block.id === event.block!.id,
+                );
+                const old = index >= 0 ? blocks[index] : undefined;
+                let block = event.block;
+                if (block.type === "html") {
+                  block = {
+                    ...block,
+                    source:
+                      (old?.type === "html" ? old.source || "" : "") +
+                      (event.blockDelta || ""),
+                  };
+                } else if (
+                  (block.type === "text" || block.type === "reasoning") &&
+                  event.blockDelta
+                ) {
+                  block = {
+                    ...block,
+                    text:
+                      (old && (old.type === "text" || old.type === "reasoning")
+                        ? old.text
+                        : "") + event.blockDelta,
+                  };
+                }
+                if (index < 0) {
+                  blocks.push(block);
+                } else {
+                  blocks[index] = block;
+                }
+                return { ...message, blocks };
               }
               if (event.activity) {
                 return {

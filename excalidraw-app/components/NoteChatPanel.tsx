@@ -11,6 +11,7 @@ import { Dialog } from "@excalidraw/excalidraw/components/Dialog";
 import { NoteChatMarkdown } from "./NoteChatMarkdown";
 import { ChatWidgetCard } from "./ChatWidgetCard";
 import { ChatWidgetBuildCard } from "./ChatWidgetBuildCard";
+import { ChatHtmlCard } from "./ChatHtmlCard";
 import "./NoteChatPanel.scss";
 
 import type { NoteChatController } from "../data/noteChats";
@@ -202,8 +203,8 @@ export const NoteChatPanel = ({
               ✦
             </div>
             <h4>围绕这篇笔记，慢慢展开</h4>
-            <p>讨论笔记，也可以描述一个交互组件，试用满意后再放进画布。</p>
-            <small>按需阅读画布；导入和应用修改都由你确认。</small>
+            <p>讨论笔记，或描述一个可以直接操作的小应用。</p>
+            <small>按需阅读画布；HTML 应用保存在聊天中。</small>
             {!session && (
               <Button
                 onSelect={() => void controller.create()}
@@ -236,7 +237,52 @@ export const NoteChatPanel = ({
                       }[message.status])}
               </span>
             </div>
-            {!!message.activities?.length && (
+            {message.blocks?.length === 0 &&
+              message.status === "generating" && (
+                <p className="note-chat-muted">
+                  {message.thinking ? "等待模型思考…" : "等待模型输出…"}
+                </p>
+              )}
+            {message.blocks?.map((block) => {
+              if (block.type === "text") {
+                return <NoteChatMarkdown key={block.id} content={block.text} />;
+              }
+              if (block.type === "reasoning") {
+                return (
+                  <details key={block.id} className="note-chat-reasoning">
+                    <summary>思考过程</summary>
+                    <div>{block.text}</div>
+                  </details>
+                );
+              }
+              if (block.type === "tool") {
+                const activity = message.activities?.find(
+                  (entry) => entry.id === block.activityId,
+                );
+                return (
+                  <details key={block.id} className="note-chat-reading">
+                    <summary>
+                      {activity?.status === "reading"
+                        ? "正在调用工具…"
+                        : activity?.summary || "工具活动"}
+                    </summary>
+                    <p>{activity?.name}</p>
+                    {activity?.details && <pre>{activity.details}</pre>}
+                  </details>
+                );
+              }
+              return noteId && selected ? (
+                <ChatHtmlCard
+                  key={block.id}
+                  block={block}
+                  noteId={noteId}
+                  sessionId={selected}
+                  generating={message.status === "generating"}
+                  controller={controller}
+                />
+              ) : null;
+            })}
+            {!message.blocks && !!message.activities?.length && (
               <details className="note-chat-reading">
                 <summary>
                   {message.activities.some(
@@ -281,26 +327,30 @@ export const NoteChatPanel = ({
                 ))}
               </details>
             )}
-            {message.role === "assistant" && message.reasoning && (
-              <details className="note-chat-reasoning">
-                <summary>
-                  {message.status === "generating" && !message.content
-                    ? "正在思考…"
-                    : "思考过程"}
-                </summary>
-                <div>{message.reasoning}</div>
-              </details>
+            {!message.blocks &&
+              message.role === "assistant" &&
+              message.reasoning && (
+                <details className="note-chat-reasoning">
+                  <summary>
+                    {message.status === "generating" && !message.content
+                      ? "正在思考…"
+                      : "思考过程"}
+                  </summary>
+                  <div>{message.reasoning}</div>
+                </details>
+              )}
+            {!message.blocks && (
+              <NoteChatMarkdown
+                content={
+                  message.content ||
+                  (message.status === "generating" && !message.reasoning
+                    ? message.thinking
+                      ? "等待模型思考…"
+                      : "正在生成回答…"
+                    : "")
+                }
+              />
             )}
-            <NoteChatMarkdown
-              content={
-                message.content ||
-                (message.status === "generating" && !message.reasoning
-                  ? message.thinking
-                    ? "等待模型思考…"
-                    : "正在生成回答…"
-                  : "")
-              }
-            />
             {Object.entries(state.widgetBuilds)
               .filter(
                 ([, build]) =>

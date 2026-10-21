@@ -16,6 +16,7 @@ export type ChatWidgetTarget = {
   baseDocument?: WidgetDocument;
 };
 export type ChatWorkspace =
+  | { kind: "html"; artifactId: string; version: number }
   | { kind: "artifact"; artifactId: string; version: number }
   | { kind: "element"; elementId: string };
 export type ChatWidgetVersion = {

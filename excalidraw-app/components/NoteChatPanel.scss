@@ -577,3 +577,69 @@
     }
   }
 }
+.note-chat-html-card {
+  border: 1px solid var(--default-border-color);
+  border-radius: 12px;
+  overflow: hidden;
+  margin: 12px 0;
+  background: var(--island-bg-color);
+  > header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px;
+    align-items: baseline;
+  }
+  > header span {
+    font-size: 11px;
+    color: var(--text-secondary-color);
+  }
+  > footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 8px;
+    button {
+      min-height: 44px;
+    }
+  }
+}
+.note-chat-html-dialog {
+  &:not(.is-expanded) {
+    display: block;
+    position: static;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  &.is-expanded[open] {
+    width: min(1000px, 94vw);
+    height: min(800px, 90vh);
+    padding: 16px;
+    border: 1px solid var(--default-border-color);
+    border-radius: 12px;
+  }
+  &::backdrop {
+    background: #0008;
+  }
+  background: var(--island-bg-color);
+  color: var(--text-primary-color);
+}
+.note-chat-html-frame {
+  width: 100%;
+  height: 360px;
+  border: 0;
+  display: block;
+  color-scheme: light dark;
+}
+.note-chat-html-dialog.is-expanded[open] .note-chat-html-frame {
+  height: calc(min(800px, 90vh) - 100px);
+}
+.note-chat-html-source {
+  max-height: 400px;
+  overflow: auto;
+  padding: 12px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
