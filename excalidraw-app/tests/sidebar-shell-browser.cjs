@@ -240,6 +240,66 @@ const json = async (url, init) => {
         `${label}: canvas/sidebar width disagrees`,
       );
     };
+    // Resize the actual native shell, then verify all tabs inherit that width.
+    const original = await sample();
+    const grip = await page.$(".app-sidebar-resize-handle");
+    const gripBox = await grip.boundingBox();
+    await page.mouse.move(gripBox.x + 3, gripBox.y + 200);
+    await page.mouse.down();
+    await page.mouse.move(gripBox.x - 177, gripBox.y + 200, { steps: 12 });
+    await page.mouse.up();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".excalidraw")
+          .style.getPropertyValue("--right-sidebar-width") === "540px",
+      { polling: 100 },
+    );
+    const widened = await sample();
+    assert.equal(widened.shell.width, original.shell.width + 180);
+    for (const index of [1, 3, 0, 4, 2]) {
+      await select(index);
+      compare(await sample(), widened, `resized/${names[index]}`);
+    }
+    // Clicking and drawing in the canvas must not dismiss the working panel.
+    await page.mouse.click(600, 400);
+    assert.ok(await page.$(".app-sidebar"));
+    await page.waitForFunction(
+      () => localStorage.getItem("aldebaran.sidebar-width") === "540",
+      { polling: 100 },
+    );
+    await page.screenshot({
+      path: "/tmp/sidebar-resize-desktop.png",
+      captureBeyondViewport: false,
+    });
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 120000 });
+    await select(2);
+    assert.equal((await sample()).rootWidth, "540px");
+    await page.click(".sidebar__close");
+    assert.equal(await page.$(".app-sidebar"), null);
+    await select(2);
+    assert.equal((await sample()).rootWidth, "540px");
+    await page.focus(".app-sidebar-resize-handle");
+    await page.keyboard.press("Home");
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".excalidraw")
+          .style.getPropertyValue("--right-sidebar-width") === "328px",
+      { polling: 100 },
+    );
+    await page.click(".app-sidebar-resize-handle", { clickCount: 2 });
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".excalidraw")
+          .style.getPropertyValue("--right-sidebar-width") === "360px",
+      { polling: 100 },
+    );
+    console.log(
+      "resize, canvas click, keyboard, reset, reopen and persistence passed",
+    );
+
     for (const [label, width, height, mobile] of [
       ["desktop", 1440, 1000, false],
       ["narrow", 900, 1000, false],

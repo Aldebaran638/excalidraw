@@ -58,7 +58,7 @@ const SNAP_BACK_ANIMATION_DURATION = 250;
  * scroll constraints box */
 const SCROLL_CONSTRAINTS_SNAP_BACK_DELAY = 200;
 
-/** single source of truth for the `--right-sidebar-width` CSS variable */
+/** Default sidebar column; hosts may control it with UIOptions.sidebarWidth. */
 export const RIGHT_SIDEBAR_WIDTH = 360;
 
 /**
@@ -578,7 +578,7 @@ export class AppViewport {
       if (opts.reserve.sidebar) {
         reserveSurface("sidebar", {
           side: isRTL ? "left" : "right",
-          offset: RIGHT_SIDEBAR_WIDTH,
+          offset: this.app.props.UIOptions.sidebarWidth ?? RIGHT_SIDEBAR_WIDTH,
         });
       }
     }

@@ -6,9 +6,11 @@ import {
 } from "@excalidraw/excalidraw/components/icons";
 import { LinkButton } from "@excalidraw/excalidraw/components/LinkButton";
 import { useUIAppState } from "@excalidraw/excalidraw/context/ui-appState";
+import { RIGHT_SIDEBAR_WIDTH } from "@excalidraw/excalidraw/components/App.viewport";
 
 import "./AppSidebar.scss";
 import { NoteChatPanel } from "./NoteChatPanel";
+import { SidebarResizeHandle } from "./SidebarResizeHandle";
 
 import type { NoteChatController } from "../data/noteChats";
 
@@ -69,11 +71,24 @@ const SidebarPromoCopy = (props: SidebarPromoCopyProps) => {
   );
 };
 
-export const AppSidebar = ({ chats }: { chats: NoteChatController | null }) => {
+export const AppSidebar = ({
+  chats,
+  width = RIGHT_SIDEBAR_WIDTH,
+  onResize,
+}: {
+  chats: NoteChatController | null;
+  width?: number;
+  onResize?: (width: number) => void;
+}) => {
   const { theme, openSidebar } = useUIAppState();
 
   return (
-    <DefaultSidebar className="app-sidebar" forceDockOnSearch={false}>
+    <DefaultSidebar
+      className="app-sidebar"
+      forceDockOnSearch={false}
+      closeOnOutsideClick={false}
+    >
+      {onResize && <SidebarResizeHandle width={width} onResize={onResize} />}
       <DefaultSidebar.TabTriggers>
         <Sidebar.TabTrigger
           tab="note-chat"

@@ -1,7 +1,38 @@
 .excalidraw {
   // The shell belongs to the sidebar, never the active tab. Keep its width
-  // inherited from App.viewport (also used to reserve the canvas UI column).
+  // inherited from the editor root (also used to reserve the canvas UI column).
   .app-sidebar {
+    .app-sidebar-resize-handle {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 8px;
+      z-index: 5;
+      cursor: ew-resize;
+      touch-action: none;
+      user-select: none;
+      outline: none;
+
+      &::after {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 3px;
+        background: transparent;
+      }
+
+      &:hover::after,
+      &:focus-visible::after,
+      &[data-resizing]::after {
+        background: var(--color-primary);
+      }
+
+      :root[dir="rtl"] & {
+        inset: 0 0 0 auto;
+        &::after {
+          inset: 0 0 0 auto;
+        }
+      }
+    }
     .sidebar-tabs-root {
       min-height: 0;
     }
@@ -115,6 +146,9 @@
 
 @media (max-width: 730px) {
   .excalidraw .app-sidebar {
+    .app-sidebar-resize-handle {
+      display: none;
+    }
     position: fixed;
     inset: auto 8px 72px;
     width: auto;

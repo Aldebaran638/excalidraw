@@ -1067,6 +1067,8 @@ export type CanvasActions = Partial<{
 }>;
 
 export type UIOptions = Partial<{
+  /** Shared sidebar column width, including the canvas-side spacing, in pixels. */
+  sidebarWidth: number;
   dockedSidebarBreakpoint: number;
   canvasActions: CanvasActions;
   tools: {

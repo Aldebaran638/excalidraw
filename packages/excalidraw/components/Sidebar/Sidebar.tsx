@@ -52,6 +52,7 @@ export const SidebarInner = forwardRef(
       children,
       onDock,
       docked,
+      closeOnOutsideClick = true,
       className,
       ...rest
     }: SidebarProps & Omit<React.RefAttributes<HTMLDivElement>, "onSelect">,
@@ -99,7 +100,8 @@ export const SidebarInner = forwardRef(
     const editorInterface = useEditorInterface();
 
     const closeLibrary = useCallback(() => {
-      const isDialogOpen = !!document.querySelector(".Dialog");
+      const isDialogOpen =
+        !!islandRef.current?.ownerDocument.querySelector(".Dialog");
 
       // Prevent closing if any dialog is open
       if (isDialogOpen) {
@@ -117,11 +119,19 @@ export const SidebarInner = forwardRef(
           if ((event.target as Element).closest(".sidebar-trigger")) {
             return;
           }
-          if (!docked || !editorInterface.canFitSidebar) {
+          if (
+            closeOnOutsideClick &&
+            (!docked || !editorInterface.canFitSidebar)
+          ) {
             closeLibrary();
           }
         },
-        [closeLibrary, docked, editorInterface.canFitSidebar],
+        [
+          closeLibrary,
+          closeOnOutsideClick,
+          docked,
+          editorInterface.canFitSidebar,
+        ],
       ),
     );
 
@@ -134,9 +144,10 @@ export const SidebarInner = forwardRef(
           closeLibrary();
         }
       };
-      document.addEventListener(EVENT.KEYDOWN, handleKeyDown);
+      const ownerDocument = islandRef.current?.ownerDocument;
+      ownerDocument?.addEventListener(EVENT.KEYDOWN, handleKeyDown);
       return () => {
-        document.removeEventListener(EVENT.KEYDOWN, handleKeyDown);
+        ownerDocument?.removeEventListener(EVENT.KEYDOWN, handleKeyDown);
       };
     }, [closeLibrary, docked, editorInterface.canFitSidebar]);
 

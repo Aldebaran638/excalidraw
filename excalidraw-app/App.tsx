@@ -80,6 +80,7 @@ import type { ResolutionType } from "@excalidraw/common/utility-types";
 import type { ResolvablePromise } from "@excalidraw/common/utils";
 
 import { WIDGET_LINK_PREFIX } from "../packages/interactive-widgets/types";
+import { useSidebarWidth } from "./useSidebarWidth";
 
 import CustomStats from "./CustomStats";
 import {
@@ -405,6 +406,7 @@ const ExcalidrawWrapper = () => {
 
   const debugCanvasRef = useRef<HTMLCanvasElement>(null);
   const appRootRef = useRef<HTMLDivElement>(null);
+  const sidebarSize = useSidebarWidth(appRootRef);
   const [ownerWindow, setOwnerWindow] = useState<Window | null>(null);
 
   useEffect(() => {
@@ -1119,6 +1121,7 @@ const ExcalidrawWrapper = () => {
         isCollaborating={isCollaborating}
         onPointerUpdate={collabAPI?.onPointerUpdate}
         UIOptions={{
+          sidebarWidth: sidebarSize.width,
           canvasActions: {
             toggleTheme: true,
             export: {
@@ -1312,7 +1315,11 @@ const ExcalidrawWrapper = () => {
           }}
         />
 
-        <AppSidebar chats={chats} />
+        <AppSidebar
+          chats={chats}
+          width={sidebarSize.width}
+          onResize={sidebarSize.resize}
+        />
         <AIWidgetPanel
           widgets={widgets}
           onChatEdit={(elementId) => {

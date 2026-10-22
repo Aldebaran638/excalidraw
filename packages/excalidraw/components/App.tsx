@@ -2413,7 +2413,9 @@ class App extends React.Component<AppProps, AppState> {
           ["--ui-pointerEvents" as any]: shouldBlockPointerEvents
             ? POINTER_EVENTS.disabled
             : POINTER_EVENTS.enabled,
-          ["--right-sidebar-width" as any]: `${RIGHT_SIDEBAR_WIDTH}px`,
+          ["--right-sidebar-width" as any]: `${
+            this.props.UIOptions.sidebarWidth ?? RIGHT_SIDEBAR_WIDTH
+          }px`,
         }}
         ref={this.excalidrawContainerRef}
         data-embeddable-controls-enabled={

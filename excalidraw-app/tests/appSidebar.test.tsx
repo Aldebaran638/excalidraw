@@ -1,4 +1,5 @@
 import { Excalidraw } from "@excalidraw/excalidraw";
+import { useRef } from "react";
 
 import {
   fireEvent,
@@ -9,8 +10,69 @@ import {
 
 import { AppSidebar } from "../components/AppSidebar";
 import { RIGHT_SIDEBAR_WIDTH } from "../../packages/excalidraw/components/App.viewport";
+import { useSidebarWidth } from "../useSidebarWidth";
+import { sidebarWidthLimit } from "../components/SidebarResizeHandle";
+
+const ResizableSidebar = () => {
+  const root = useRef<HTMLDivElement>(null);
+  const { width, resize } = useSidebarWidth(root);
+  return (
+    <div ref={root}>
+      <Excalidraw
+        UIOptions={{ sidebarWidth: width }}
+        initialData={{
+          appState: {
+            openSidebar: { name: "default", tab: "library" },
+            defaultSidebarDockedPreference: false,
+          },
+        }}
+      >
+        <AppSidebar chats={null} width={width} onResize={resize} />
+      </Excalidraw>
+    </div>
+  );
+};
 
 describe("application sidebar shell", () => {
+  it("keeps the sidebar open on canvas click and shares/persists its adjustable width", async () => {
+    localStorage.setItem("aldebaran.sidebar-width", "480");
+    try {
+      const { container, unmount } = await render(<ResizableSidebar />);
+      const editor = container.querySelector<HTMLElement>(".excalidraw")!;
+      const handle = container.querySelector<HTMLElement>("[role=separator]")!;
+      expect(editor.style.getPropertyValue("--right-sidebar-width")).toBe(
+        "480px",
+      );
+      fireEvent.pointerDown(container.querySelector("canvas")!, { button: 0 });
+      expect(container.querySelector(".app-sidebar")).not.toBeNull();
+      fireEvent.keyDown(handle, { key: "ArrowLeft" });
+      await waitFor(() =>
+        expect(editor.style.getPropertyValue("--right-sidebar-width")).toBe(
+          "496px",
+        ),
+      );
+      fireEvent.keyDown(handle, { key: "Home" });
+      await waitFor(() =>
+        expect(handle).toHaveAttribute("aria-valuenow", "328"),
+      );
+      fireEvent.doubleClick(handle);
+      await waitFor(() =>
+        expect(handle).toHaveAttribute("aria-valuenow", "360"),
+      );
+      await waitFor(() =>
+        expect(localStorage.getItem("aldebaran.sidebar-width")).toBe("360"),
+      );
+      unmount();
+    } finally {
+      localStorage.removeItem("aldebaran.sidebar-width");
+    }
+  });
+
+  it("bounds desktop width while preserving canvas space", () => {
+    expect(sidebarWidthLimit(1440)).toBe(800);
+    expect(sidebarWidthLimit(900)).toBe(620);
+    expect(sidebarWidthLimit(390)).toBe(328);
+  });
   it.each([false, true])(
     "retains the shell/header/tablist and docking policy across tabs (docked=%s)",
     async (docked) => {
