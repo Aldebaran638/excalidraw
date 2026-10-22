@@ -1,5 +1,5 @@
-# PREVIEW_NOTES_DIR=/absolute/isolated/notes docker compose -p excalidraw-preview -f docker-compose.preview.yml up -d --build
-# Keep the same notes directory when replacing a preview: it contains notes AND .chats.
+# docker compose -p excalidraw-preview -f docker-compose.preview.yml up -d --build
+# Fixed project-local storage: never switch data directories for acceptance.
 services:
   preview:
     build:
@@ -20,7 +20,7 @@ services:
       QWEN_MODEL: ${QWEN_MODEL:-qwen3.8-27b}
       QWEN_API_KEY: ${QWEN_API_KEY:-}
     volumes:
-      - ${PREVIEW_NOTES_DIR:?Set PREVIEW_NOTES_DIR to an isolated notes directory}:/opt/node_app/notes
+      - ./.local-data/preview/notes:/opt/node_app/notes
     healthcheck:
       test:
         [

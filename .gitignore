@@ -28,3 +28,4 @@ html
 meta*.json
 .claude
 server-dist
+.local-data/

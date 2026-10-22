@@ -9,7 +9,8 @@
 ## Preview service
 
 - Keep the daily service on port 3001 untouched unless explicitly requested. Use one fixed preview port, 3009, for both development and production acceptance; do not leave parallel application previews on 3002–3008 or allocate additional preview ports. Stop the previous preview before replacing it, and preserve its notes and chat storage.
-- `docker-compose.preview.yml` requires an explicit isolated `PREVIEW_NOTES_DIR`; never point destructive acceptance scripts at the user's daily notes. Unit-test ephemeral ports and private upstream fixture ports are not application previews.
+- Port 3009 is the shared test application and always mounts `./.local-data/preview/notes/`. Notes, `.chats/` sessions and generated artifacts must persist there across updates, not in `/tmp`. Do not switch this service to another acceptance dataset or create a second application test environment. Back up before risky testing; additive fixtures must have unique names and cleanup may remove only the exact fixtures created by that test, never user records. Unit-test temporary directories/ephemeral ports and private upstream fixture ports remain allowed, but must never replace the running application's data directory.
+- If replacing Docker with Vite on 3009, explicitly set `REPOSITORY_NOTES_DIR` to that same project's absolute `.local-data/preview/notes/` path; do not fall back to a different dataset. Older acceptance scripts that demand a disposable application directory must be adapted before use, not used as a reason to switch mounts.
 
 ## Local version management
 

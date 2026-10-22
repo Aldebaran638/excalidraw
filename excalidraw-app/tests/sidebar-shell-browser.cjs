@@ -19,8 +19,12 @@ const json = async (url, init) => {
   return data;
 };
 (async () => {
-  const directory = process.env.TEST_NOTES_DIR;
-  assert.ok(directory?.startsWith("/tmp/excalidraw-sidebar-shell."));
+  const directory = path.resolve(__dirname, "../../.local-data/preview/notes");
+  assert.ok(
+    !process.env.TEST_NOTES_DIR ||
+      path.resolve(process.env.TEST_NOTES_DIR) === directory,
+    "3009 always uses the fixed project-local preview dataset; do not switch its mount",
+  );
   const noteId = randomUUID();
   const filename = `__sidebar-${noteId}.excalidraw`;
   await json(`/api/notes/${filename}`, {
@@ -427,6 +431,9 @@ const json = async (url, init) => {
     const force = setTimeout(() => browser.process()?.kill(), 5000);
     await browser.close();
     clearTimeout(force);
+    // Only this run's UUID-named fixture, never the shared dataset itself.
+    await fs.unlink(path.join(directory, filename));
+    await fs.rm(root, { recursive: true, force: true });
   }
 })().catch((error) => {
   console.error(error);

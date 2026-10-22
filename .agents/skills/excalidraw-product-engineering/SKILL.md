@@ -33,7 +33,7 @@ description: Design, implement and review this project's Excalidraw features wit
 - 打开面板、自动保存、流式更新不能重置画布视角、缩放或历史。未确认的 AI 候选不写入场景。
 - 新增 DOM/browser API 使用 app.ownerDocument、app.ownerWindow；无 app 时从挂载节点取得 ownerDocument/defaultView。
 - AI 数据是非可信输入：校验定义、工具参数和目标范围。允许聊天中的 HTML/CSS/JavaScript 在隔离预览中运行，不直接在宿主页面执行；默认禁止访问宿主数据、网络、弹窗及顶层导航。旧声明式组件继续沿用原校验与运行时。
-- 保留用户未提交的笔记和计划改动；使用独立测试目录及端口，不擅自替换正在使用的服务。
+- 保留用户未提交的笔记和计划改动。3009 本身就是共用测试程序，固定使用项目根目录 `.local-data/preview/notes/`，包括其中的 `.chats/` 会话及组件；更新只换程序，不换数据目录，不再切到临时隔离环境。验收使用唯一命名的新增样例，清理仅针对本次样例，不能重置用户数据；3001 不动。单元测试仍可使用临时文件，不得据此切换应用挂载。
 
 ## 验收
 
