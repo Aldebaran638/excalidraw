@@ -164,10 +164,17 @@ export const repositoryNoteExists = async (name: string) => {
   return true;
 };
 
+export class RepositoryNoteLoadError extends Error {
+  constructor(public readonly status: number) {
+    super(status === 404 ? "笔记文件未找到" : `笔记读取失败（HTTP ${status}）`);
+    this.name = "RepositoryNoteLoadError";
+  }
+}
+
 export const loadRepositoryNote = async (name: string) => {
   const response = await fetch(`/api/notes/${encodeURIComponent(name)}`);
   if (!response.ok) {
-    throw new Error("Unable to load repository note");
+    throw new RepositoryNoteLoadError(response.status);
   }
   const parsed = await response.clone().json();
   return {

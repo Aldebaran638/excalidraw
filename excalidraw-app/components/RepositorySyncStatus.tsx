@@ -9,7 +9,10 @@ import { t } from "@excalidraw/excalidraw/i18n";
 
 import "./RepositorySyncStatus.scss";
 
-import type { RepositorySyncStatus as SyncStatus } from "../hooks/useRepositoryNoteSync";
+import type {
+  RepositorySyncStatus as SyncStatus,
+  RepositoryLoadFailure,
+} from "../hooks/useRepositoryNoteSync";
 
 const contentForStatus = (status: SyncStatus) => {
   switch (status) {
@@ -37,20 +40,53 @@ const contentForStatus = (status: SyncStatus) => {
   }
 };
 
-export const RepositorySyncStatus = ({ status }: { status: SyncStatus }) => {
+export const RepositorySyncStatus = ({
+  status,
+  loadFailure,
+  onRetry,
+  retrying = false,
+}: {
+  status: SyncStatus;
+  loadFailure?: RepositoryLoadFailure | null;
+  onRetry?: () => void;
+  retrying?: boolean;
+}) => {
   const content = contentForStatus(status);
+  const label = loadFailure
+    ? status === "conflict"
+      ? "恢复待确认，自动保存已暂停"
+      : loadFailure.kind === "missing"
+      ? "文件未找到，自动保存已暂停"
+      : "读取失败，自动保存已暂停"
+    : content.label;
   return (
     <div
       className={`RepositorySyncStatus RepositorySyncStatus--${status}`}
       role="status"
       aria-live="polite"
-      aria-label={content.label}
-      title={content.label}
+      aria-label={label}
+      title={
+        loadFailure
+          ? status === "conflict"
+            ? `${loadFailure.name} 已恢复读取。请选择保留当前画布为副本，或加载文件版本。`
+            : `${loadFailure.name}：${loadFailure.message}。当前画布已保留，不会自动新建笔记。`
+          : label
+      }
     >
       <span className="RepositorySyncStatus__icon" aria-hidden="true">
         {content.icon}
       </span>
-      <span className="RepositorySyncStatus__label">{content.label}</span>
+      <span className="RepositorySyncStatus__label">{label}</span>
+      {loadFailure && onRetry && status !== "conflict" && (
+        <button
+          type="button"
+          className="RepositorySyncStatus__retry"
+          disabled={retrying}
+          onClick={onRetry}
+        >
+          {retrying ? "读取中…" : "重试读取"}
+        </button>
+      )}
     </div>
   );
 };

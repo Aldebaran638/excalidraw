@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AppState } from "@excalidraw/excalidraw/types";
 
-import { saveRepositoryNote } from "../data/repositoryNotes";
+import {
+  saveRepositoryNote,
+  loadRepositoryNote,
+} from "../data/repositoryNotes";
 
 describe("repository note transport", () => {
   afterEach(() => {
@@ -56,5 +59,15 @@ describe("repository note transport", () => {
     ).rejects.toMatchObject({
       name: "RepositoryNoteConflictError",
     });
+  });
+
+  it.each([404, 500])("preserves HTTP %s on load failures", async (status) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(null, { status })),
+    );
+    await expect(
+      loadRepositoryNote("original.excalidraw"),
+    ).rejects.toMatchObject({ name: "RepositoryNoteLoadError", status });
   });
 });

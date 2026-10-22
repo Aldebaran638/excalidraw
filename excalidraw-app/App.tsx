@@ -80,6 +80,7 @@ import type { ResolutionType } from "@excalidraw/common/utility-types";
 import type { ResolvablePromise } from "@excalidraw/common/utils";
 
 import { WIDGET_LINK_PREFIX } from "../packages/interactive-widgets/types";
+
 import { useSidebarWidth } from "./useSidebarWidth";
 
 import CustomStats from "./CustomStats";
@@ -484,6 +485,9 @@ const ExcalidrawWrapper = () => {
     status: repositorySyncStatus,
     externalUpdate,
     resolveExternalUpdate,
+    loadFailure,
+    retryLoad,
+    retryingLoad,
   } = useRepositoryNoteSync({
     excalidrawAPI,
     ownerWindow,
@@ -1164,14 +1168,24 @@ const ExcalidrawWrapper = () => {
           if (isMobile) {
             return (
               <div className="excalidraw-ui-top-right">
-                <RepositorySyncStatus status={repositorySyncStatus} />
+                <RepositorySyncStatus
+                  status={repositorySyncStatus}
+                  loadFailure={loadFailure}
+                  retrying={retryingLoad}
+                  onRetry={() => void retryLoad()}
+                />
               </div>
             );
           }
 
           return (
             <div className="excalidraw-ui-top-right">
-              <RepositorySyncStatus status={repositorySyncStatus} />
+              <RepositorySyncStatus
+                status={repositorySyncStatus}
+                loadFailure={loadFailure}
+                retrying={retryingLoad}
+                onRetry={() => void retryLoad()}
+              />
               {!collabAPI || isCollabDisabled ? null : (
                 <>
                   {excalidrawAPI?.getEditorInterface().formFactor ===
@@ -1331,6 +1345,7 @@ const ExcalidrawWrapper = () => {
             void chats?.referenceElement(elementId);
           }}
           conflict={externalUpdate?.name || null}
+          recoveryConflict={externalUpdate?.recovery}
           resolveConflict={resolveExternalUpdate}
         />
 

@@ -20,6 +20,7 @@ import {
   saveRepositoryNote,
   serializeRepositoryNote,
   subscribeToRepositoryNoteChanges,
+  RepositoryNoteLoadError,
 } from "../data/repositoryNotes";
 
 import { readMetadata } from "../data/noteIdentity";
@@ -27,6 +28,7 @@ import { readMetadata } from "../data/noteIdentity";
 import type { RepositoryMetadata } from "../data/noteIdentity";
 
 const STORAGE_KEY = "aldebaran.repository-note-name";
+const RECOVERY_KEY = "aldebaran.repository-note-recovery";
 const CLIENT_ID_STORAGE_KEY = "aldebaran.repository-note-client-id";
 const SAVE_DELAY = 600;
 
@@ -47,6 +49,12 @@ type SceneSnapshot = Readonly<{
   files: BinaryFiles;
   serializedContent: string;
 }>;
+
+export type RepositoryLoadFailure = {
+  name: string;
+  kind: "missing" | "error";
+  message: string;
+};
 
 const isConflictError = (error: unknown) =>
   error instanceof Error && error.name === "RepositoryNoteConflictError";
@@ -70,6 +78,15 @@ export const useRepositoryNoteSync = ({
   const nameRef = useRef<string | null>(null);
   const revisionRef = useRef<string | null>(null);
   const readyRef = useRef(false);
+  const loadBlockedRef = useRef<
+    (RepositoryLoadFailure & { baseline: string; review?: boolean }) | null
+  >(null);
+  const [loadFailure, setLoadFailure] = useState<RepositoryLoadFailure | null>(
+    null,
+  );
+  const [retryingLoad, setRetryingLoad] = useState(false);
+  const retryingLoadRef = useRef(false);
+  const loadRequestRef = useRef(0);
   const applyingRemoteRef = useRef(false);
   const snapshotRef = useRef<SceneSnapshot | null>(null);
   const clientIdRef = useRef<string | null>(null);
@@ -84,6 +101,7 @@ export const useRepositoryNoteSync = ({
     name: string;
     kind: "updated" | "deleted";
     revision?: string;
+    recovery?: boolean;
   } | null>(null);
   const externalUpdateRef = useRef<typeof externalUpdate>(null);
   const transientRef = useRef(hasTransientEdits);
@@ -129,14 +147,82 @@ export const useRepositoryNoteSync = ({
     [ownerWindow],
   );
 
+  const currentContent = useCallback(
+    () =>
+      excalidrawAPI
+        ? JSON.stringify({
+            elements: excalidrawAPI.getSceneElementsIncludingDeleted(),
+            files: excalidrawAPI.getFiles(),
+            background: excalidrawAPI.getAppState().viewBackgroundColor,
+          })
+        : "",
+    [excalidrawAPI],
+  );
+
+  const markRecovery = useCallback(
+    (name: string | null) => {
+      try {
+        if (name) {
+          ownerWindow?.localStorage.setItem(RECOVERY_KEY, name);
+        } else {
+          ownerWindow?.localStorage.removeItem(RECOVERY_KEY);
+        }
+      } catch {
+        // The in-memory guard still protects this page if storage is unavailable.
+      }
+    },
+    [ownerWindow],
+  );
+
+  const blockLoad = useCallback(
+    (name: string, error: unknown) => {
+      const failure: RepositoryLoadFailure = {
+        name,
+        kind:
+          error instanceof RepositoryNoteLoadError && error.status === 404
+            ? "missing"
+            : "error",
+        message: error instanceof Error ? error.message : "笔记读取失败",
+      };
+      loadBlockedRef.current = {
+        ...failure,
+        review: loadBlockedRef.current?.review,
+        baseline:
+          loadBlockedRef.current?.name === name
+            ? loadBlockedRef.current.baseline
+            : currentContent(),
+      };
+      setLoadFailure(failure);
+      setStatus(failure.kind);
+      markRecovery(name);
+    },
+    [currentContent, markRecovery],
+  );
+
   const applyRepositoryNote = useCallback(
-    async (name: string, source: "open" | "external" | "initial") => {
+    async (
+      name: string,
+      source: "open" | "external" | "initial",
+      loaded?: Awaited<ReturnType<typeof loadRepositoryNote>>,
+    ) => {
       if (!excalidrawAPI) {
         return;
       }
       applyingRemoteRef.current = true;
+      const request = ++loadRequestRef.current;
+      const generation = saveGenerationRef.current;
+      const baseline =
+        loadBlockedRef.current?.name === name
+          ? loadBlockedRef.current.baseline
+          : currentContent();
       try {
-        const data = await loadRepositoryNote(name);
+        const data = loaded ?? (await loadRepositoryNote(name));
+        if (
+          request !== loadRequestRef.current ||
+          generation !== saveGenerationRef.current
+        ) {
+          return;
+        }
         metadataRef.current = data.metadata;
         setRepositoryNoteId(data.metadata?.noteId || null);
         const currentAppState = excalidrawAPI.getAppState();
@@ -172,11 +258,26 @@ export const useRepositoryNoteSync = ({
         );
         queuedContentRef.current = null;
         revisionRef.current = data.revision;
+        loadBlockedRef.current = null;
+        markRecovery(null);
+        setLoadFailure(null);
         setRepositoryNoteName(name);
         setStatus(source === "external" ? "external" : "synced");
+      } catch (error) {
+        if (
+          source !== "open" &&
+          request === loadRequestRef.current &&
+          generation === saveGenerationRef.current
+        ) {
+          blockLoad(name, error);
+          loadBlockedRef.current!.baseline = baseline;
+        }
+        throw error;
       } finally {
         const releaseRemoteApply = () => {
-          applyingRemoteRef.current = false;
+          if (request === loadRequestRef.current) {
+            applyingRemoteRef.current = false;
+          }
         };
         if (ownerWindow) {
           // React may deliver the scene change callback after the current
@@ -188,7 +289,14 @@ export const useRepositoryNoteSync = ({
         }
       }
     },
-    [excalidrawAPI, ownerWindow, setRepositoryNoteName],
+    [
+      excalidrawAPI,
+      ownerWindow,
+      setRepositoryNoteName,
+      currentContent,
+      blockLoad,
+      markRecovery,
+    ],
   );
 
   const performSaveSnapshot = useCallback(
@@ -197,6 +305,19 @@ export const useRepositoryNoteSync = ({
       explicitName?: string,
       generation = saveGenerationRef.current,
     ) => {
+      if (
+        loadBlockedRef.current &&
+        (!explicitName ||
+          normalizeRepositoryNoteName(explicitName) ===
+            loadBlockedRef.current.name)
+      ) {
+        throw new Error(
+          "原笔记尚未成功读取，自动保存已暂停。请重试读取，或明确另存为其他文件。",
+        );
+      }
+      if (!readyRef.current) {
+        throw new Error("本地笔记服务尚未准备好，请稍后重试");
+      }
       const isAutomaticCreate = !explicitName && !nameRef.current;
       let targetName = explicitName
         ? normalizeRepositoryNoteName(explicitName)
@@ -258,6 +379,9 @@ export const useRepositoryNoteSync = ({
             queuedContentRef.current = null;
           }
           setRepositoryNoteName(result.name);
+          loadBlockedRef.current = null;
+          markRecovery(null);
+          setLoadFailure(null);
           setStatus(queuedContentRef.current ? "pending" : "synced");
           return result.name;
         } catch (error) {
@@ -291,7 +415,13 @@ export const useRepositoryNoteSync = ({
       setStatus("error");
       throw new Error("Unable to create a unique repository note name");
     },
-    [getRepositoryClientId, setRepositoryNoteName, ownerWindow, excalidrawAPI],
+    [
+      getRepositoryClientId,
+      setRepositoryNoteName,
+      ownerWindow,
+      excalidrawAPI,
+      markRecovery,
+    ],
   );
 
   // Serialize all writes. A debounced autosave and an explicit Save/Save As
@@ -350,6 +480,7 @@ export const useRepositoryNoteSync = ({
       if (
         !availableRef.current ||
         !readyRef.current ||
+        loadBlockedRef.current ||
         applyingRemoteRef.current ||
         externalUpdateRef.current
       ) {
@@ -453,6 +584,11 @@ export const useRepositoryNoteSync = ({
   const flush = useCallback(() => debouncedSave.flush(), [debouncedSave]);
   const ensureNoteIdentity = useCallback(
     async (fork = false) => {
+      if (loadBlockedRef.current) {
+        throw new Error(
+          "原笔记尚未成功读取，请先重试读取或手动另存为；不会自动创建新笔记。",
+        );
+      }
       if (externalUpdateRef.current) {
         throw new Error("请先处理本地笔记冲突");
       }
@@ -489,10 +625,14 @@ export const useRepositoryNoteSync = ({
   useEffect(
     () =>
       excalidrawAPI?.onEvent("document:replace", () => {
-        if (applyingRemoteRef.current) {
-          return;
-        }
+        // updateScene() does not emit document:replace. An explicit import or
+        // new document must invalidate even a currently pending repository read.
         saveGenerationRef.current++;
+        loadRequestRef.current++;
+        applyingRemoteRef.current = false;
+        loadBlockedRef.current = null;
+        markRecovery(null);
+        setLoadFailure(null);
         debouncedSave.cancel();
         metadataRef.current = null;
         setRepositoryNoteId(null);
@@ -504,12 +644,36 @@ export const useRepositoryNoteSync = ({
         setDocumentSession((value) => value + 1);
         setStatus("unbound");
       }),
-    [excalidrawAPI, debouncedSave, setRepositoryNoteName],
+    [excalidrawAPI, debouncedSave, setRepositoryNoteName, markRecovery],
   );
 
   useEffect(() => {
     if (!excalidrawAPI || !ownerWindow || readyRef.current) {
       return;
+    }
+    // Restore the binding before I/O. A failed read is NOT a new document.
+    const savedName = ownerWindow.localStorage.getItem(STORAGE_KEY);
+    const recoveringDraft =
+      !!savedName &&
+      ownerWindow.localStorage.getItem(RECOVERY_KEY) === savedName;
+    const generation = saveGenerationRef.current;
+    if (savedName) {
+      setRepositoryNoteName(savedName);
+      loadBlockedRef.current = {
+        name: savedName,
+        kind: "error",
+        message: "正在读取原笔记",
+        baseline: currentContent(),
+        review: recoveringDraft,
+      };
+      if (recoveringDraft) {
+        blockLoad(
+          savedName,
+          new Error(
+            "上次读取未完成，已保留浏览器中的画布。请重试读取并确认恢复方式。",
+          ),
+        );
+      }
     }
     void ownerWindow
       .fetch("/api/health")
@@ -519,20 +683,88 @@ export const useRepositoryNoteSync = ({
         }
         availableRef.current = true;
         setAvailable(true);
-        const savedName = ownerWindow.localStorage.getItem(STORAGE_KEY);
-        if (savedName) {
-          await applyRepositoryNote(savedName, "initial").catch(() => {
-            setRepositoryNoteName(null);
-            setStatus("missing");
+        if (generation !== saveGenerationRef.current) {
+          readyRef.current = true;
+          return;
+        }
+        if (savedName && !recoveringDraft) {
+          await applyRepositoryNote(savedName, "initial").catch((error) => {
+            if (generation === saveGenerationRef.current) {
+              blockLoad(savedName, error);
+            }
           });
         }
         readyRef.current = true;
       })
       .catch(() => {
-        setStatus("unavailable");
+        if (generation !== saveGenerationRef.current) {
+          readyRef.current = true;
+          return;
+        }
+        if (savedName) {
+          blockLoad(savedName, new Error("本地笔记服务暂时无法连接"));
+        } else {
+          setStatus("unavailable");
+        }
         readyRef.current = true;
       });
-  }, [applyRepositoryNote, excalidrawAPI, ownerWindow, setRepositoryNoteName]);
+  }, [
+    applyRepositoryNote,
+    excalidrawAPI,
+    ownerWindow,
+    setRepositoryNoteName,
+    blockLoad,
+    currentContent,
+  ]);
+
+  const retryLoad = useCallback(async () => {
+    const blocked = loadBlockedRef.current;
+    if (!blocked || retryingLoadRef.current) {
+      return;
+    }
+    retryingLoadRef.current = true;
+    setRetryingLoad(true);
+    const generation = saveGenerationRef.current;
+    try {
+      const data = await loadRepositoryNote(blocked.name);
+      if (
+        generation !== saveGenerationRef.current ||
+        loadBlockedRef.current !== blocked
+      ) {
+        return;
+      }
+      availableRef.current = true;
+      setAvailable(true);
+      readyRef.current = true;
+      if (
+        blocked.review ||
+        currentContent() !== blocked.baseline ||
+        transientRef.current?.()
+      ) {
+        const change = {
+          name: blocked.name,
+          kind: "updated" as const,
+          revision: data.revision ?? undefined,
+          recovery: true,
+        };
+        externalUpdateRef.current = change;
+        setExternalUpdate(change);
+        setStatus("conflict");
+      } else {
+        await applyRepositoryNote(blocked.name, "external", data);
+      }
+    } catch (error) {
+      if (
+        generation === saveGenerationRef.current &&
+        loadBlockedRef.current === blocked
+      ) {
+        blockLoad(blocked.name, error);
+      }
+    } finally {
+      retryingLoadRef.current = false;
+      setRetryingLoad(false);
+    }
+  }, [applyRepositoryNote, blockLoad, currentContent]);
 
   useEffect(() => {
     if (!excalidrawAPI || !ownerWindow || !available) {
@@ -550,6 +782,9 @@ export const useRepositoryNoteSync = ({
       if (change.name !== nameRef.current) {
         return;
       }
+      if (loadBlockedRef.current) {
+        return;
+      }
       if (change.revision && change.revision === revisionRef.current) {
         return;
       }
@@ -564,9 +799,7 @@ export const useRepositoryNoteSync = ({
       if (change.kind === "deleted") {
         saveGenerationRef.current += 1;
         debouncedSave.cancel();
-        revisionRef.current = null;
-        setRepositoryNoteName(null);
-        setStatus("missing");
+        blockLoad(change.name, new RepositoryNoteLoadError(404));
         excalidrawAPI.setToast({
           message: `${change.name} was deleted locally. The canvas is preserved.`,
           duration: 3500,
@@ -582,8 +815,8 @@ export const useRepositoryNoteSync = ({
             duration: 1800,
           });
         })
-        .catch(() => {
-          setStatus("error");
+        .catch((error) => {
+          blockLoad(change.name, error);
         });
     };
     return subscribeToRepositoryNoteChanges(receive, ownerWindow, () => {
@@ -615,6 +848,7 @@ export const useRepositoryNoteSync = ({
     setRepositoryNoteName,
     ownerWindow,
     available,
+    blockLoad,
   ]);
 
   const resolveExternalUpdate = useCallback(
@@ -623,21 +857,37 @@ export const useRepositoryNoteSync = ({
       if (!change || !excalidrawAPI) {
         return;
       }
-      if (choice === "copy") {
-        await saveAs(createTimestampedRepositoryNoteName());
-      } else if (change.kind === "deleted") {
-        revisionRef.current = null;
-        setRepositoryNoteName(null);
-        setStatus("missing");
-      } else {
-        await applyRepositoryNote(change.name, "external");
+      const generation = saveGenerationRef.current;
+      try {
+        if (choice === "copy") {
+          await saveAs(createTimestampedRepositoryNoteName());
+        } else if (change.kind === "deleted") {
+          blockLoad(change.name, new RepositoryNoteLoadError(404));
+          externalUpdateRef.current = null;
+          setExternalUpdate(null);
+          return;
+        } else {
+          await applyRepositoryNote(change.name, "external");
+        }
+        if (generation !== saveGenerationRef.current) {
+          return;
+        }
+        queuedContentRef.current = null;
+        snapshotRef.current = null;
+        externalUpdateRef.current = null;
+        setExternalUpdate(null);
+      } catch (error) {
+        if (generation === saveGenerationRef.current) {
+          excalidrawAPI.setToast({
+            message: `恢复未完成，当前画布已保留：${
+              error instanceof Error ? error.message : "请重试"
+            }`,
+            duration: 5000,
+          });
+        }
       }
-      queuedContentRef.current = null;
-      snapshotRef.current = null;
-      externalUpdateRef.current = null;
-      setExternalUpdate(null);
     },
-    [excalidrawAPI, saveAs, applyRepositoryNote, setRepositoryNoteName],
+    [excalidrawAPI, saveAs, applyRepositoryNote, blockLoad],
   );
 
   return {
@@ -654,5 +904,8 @@ export const useRepositoryNoteSync = ({
     externalUpdate,
     resolveExternalUpdate,
     available,
+    loadFailure,
+    retryLoad,
+    retryingLoad,
   };
 };

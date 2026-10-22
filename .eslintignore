@@ -1,4 +1,5 @@
 node_modules/
+.local-data/
 build/
 server-dist/
 package-lock.json

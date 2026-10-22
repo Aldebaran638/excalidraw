@@ -10,6 +10,35 @@
   background: var(--color-surface-lowest);
   font-size: 0.75rem;
   white-space: nowrap;
+  max-width: 100%;
+
+  &__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__retry {
+    flex-shrink: 0;
+    min-height: 2.5rem;
+    padding: 0 0.5rem;
+    border: 0;
+    border-radius: 0.35rem;
+    background: transparent;
+    color: var(--color-primary);
+    font: inherit;
+    cursor: pointer;
+    &:hover {
+      background: var(--button-hover-bg);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--color-primary);
+      outline-offset: -2px;
+    }
+    &:disabled {
+      cursor: wait;
+      opacity: 0.6;
+    }
+  }
 
   &__icon {
     display: inline-flex;

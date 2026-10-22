@@ -30,11 +30,13 @@ export const AIWidgetPanel = ({
   conflict,
   resolveConflict,
   onChatEdit,
+  recoveryConflict,
 }: {
   widgets: ReturnType<typeof useAIWidgets>;
   conflict: string | null;
   resolveConflict: (choice: "discard" | "copy") => Promise<void>;
   onChatEdit?: (elementId: string) => void;
+  recoveryConflict?: boolean;
 }) => {
   const [contentHeight, setContentHeight] = useState(0);
   const [previewExpanded, setPreviewExpanded] = useState(false);
@@ -424,7 +426,11 @@ export const AIWidgetPanel = ({
           aria-label="本地文件更新冲突"
           data-widget-interactive="true"
         >
-          <p>{conflict} 在本地有更新。你的当前画布和草稿尚未覆盖。</p>
+          <p>
+            {recoveryConflict
+              ? `${conflict} 已恢复读取，但当前画布有未保存的修改。请选择保留副本或加载文件版本。`
+              : `${conflict} 在本地有更新。你的当前画布和草稿尚未覆盖。`}
+          </p>
           <Button
             onClick={() => {
               w.flushDrafts();
