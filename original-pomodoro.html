@@ -1,0 +1,230 @@
+<div id="pomodoro-271" class="pm-wrap">
+  <style>
+    #pomodoro-271{--accent:#d95442;--dark:#302b29;--muted:#8c827c;--base:#fffdf9;font-family:ui-sans-serif,system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:var(--dark);width:100%;max-width:590px;margin:0 auto;box-sizing:border-box}
+    #pomodoro-271 *{box-sizing:border-box}
+    #pomodoro-271 button,#pomodoro-271 input{font:inherit}
+    #pomodoro-271 button{cursor:pointer}
+    #pomodoro-271 .pm-shell{background:#fffdf9;border:1px solid #ece3dc;border-radius:27px;overflow:hidden;box-shadow:0 10px 35px rgba(90,56,35,.055)}
+    #pomodoro-271 .pm-header{padding:25px 28px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+    #pomodoro-271 .pm-brand{display:flex;align-items:center;gap:11px}
+    #pomodoro-271 .pm-logo{width:43px;height:43px;border-radius:15px;background:#faebe5;display:grid;place-items:center;font-size:24px}
+    #pomodoro-271 .pm-brand-title{font-size:18px;line-height:1.3;font-weight:750;letter-spacing:-.3px}
+    #pomodoro-271 .pm-brand-sub{font-size:11px;color:var(--muted);margin-top:4px}
+    #pomodoro-271 .pm-status{background:#f7efe8;color:#93786a;border-radius:999px;padding:7px 11px;font-size:11px;white-space:nowrap;font-weight:700;display:flex;align-items:center;gap:6px}
+    #pomodoro-271 .pm-status:before{content:"";width:7px;height:7px;background:#c3a18b;border-radius:50%}
+    #pomodoro-271 .pm-status.active:before{background:#59ad7d;box-shadow:0 0 0 3px #59ad7d22}
+    #pomodoro-271 .pm-modes{background:#f4f0eb;margin:0 25px;border-radius:14px;padding:5px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px}
+    #pomodoro-271 .pm-mode{min-width:0;border:0;color:#887c75;background:transparent;border-radius:10px;padding:12px 2px;font-size:12px;font-weight:650;transition:background .15s,color .15s}
+    #pomodoro-271 .pm-mode.selected{background:white;color:#bf4b3a;box-shadow:0 2px 8px #2c21120a}
+    #pomodoro-271 .pm-display{position:relative;padding:26px 14px 12px;display:flex;flex-direction:column;align-items:center}
+    #pomodoro-271 .pm-ring{width:min(100%,268px);aspect-ratio:1;position:relative}
+    #pomodoro-271 .pm-ring svg{display:block;width:100%;height:100%;overflow:visible;transform:rotate(-90deg)}
+    #pomodoro-271 .pm-track{fill:none;stroke:#f3eae4;stroke-width:9}
+    #pomodoro-271 .pm-progress{fill:none;stroke:var(--accent);stroke-width:9;stroke-linecap:round;transition:stroke-dashoffset .18s linear,stroke .2s}
+    #pomodoro-271 .pm-clockface{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:5px}
+    #pomodoro-271 .pm-emoji{font-size:26px;margin-bottom:8px}
+    #pomodoro-271 .pm-time{font-size:64px;font-weight:750;letter-spacing:-3.2px;line-height:1;font-variant-numeric:tabular-nums}
+    #pomodoro-271 .pm-timelabel{font-size:12px;color:#a3958d;font-weight:600;margin-top:6px}
+    #pomodoro-271 .pm-motivation{font-size:13px;color:#9a8c83;text-align:center;margin:10px 0 0}
+    #pomodoro-271 .pm-controls{display:flex;align-items:center;justify-content:center;gap:11px;padding:23px 16px 27px}
+    #pomodoro-271 .pm-main{border:0;border-radius:13px;background:var(--accent);color:white;height:50px;min-width:173px;padding:0 22px;font-size:15px;font-weight:750;box-shadow:0 6px 15px #d954422c;display:flex;align-items:center;justify-content:center;gap:10px}
+    #pomodoro-271 .pm-main:hover{filter:brightness(.96)}
+    #pomodoro-271 .pm-iconbtn{height:50px;width:50px;background:#f6f0eb;color:#76665f;border:0;border-radius:13px;display:grid;place-items:center}
+    #pomodoro-271 .pm-iconbtn:hover{background:#eee5de}
+    #pomodoro-271 .pm-iconbtn svg,#pomodoro-271 .pm-main svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+    #pomodoro-271 .pm-bottom{background:#faf5ef;border-top:1px solid #f0e7de;padding:21px 26px 23px}
+    #pomodoro-271 .pm-sectiontop{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:13px}
+    #pomodoro-271 .pm-sectiontitle{font-size:12px;font-weight:750;color:#6c5d54}
+    #pomodoro-271 .pm-count{font-size:11px;color:#a08e81;font-variant-numeric:tabular-nums}
+    #pomodoro-271 .pm-tomatoes{display:flex;gap:13px;align-items:center;margin:0 0 23px}
+    #pomodoro-271 .pm-tomato{width:34px;height:34px;border:1px solid #e8ded6;border-radius:10px;display:grid;place-items:center;font-size:19px;background:#fffcf8;filter:grayscale(1);opacity:.33}
+    #pomodoro-271 .pm-tomato.done{background:#fff1e8;border-color:#f3d5c5;filter:none;opacity:1}
+    #pomodoro-271 .pm-taskbox{background:white;border:1px solid #ece3db;border-radius:13px;padding:13px 15px}
+    #pomodoro-271 .pm-tasklabel{display:block;color:#a08f82;font-size:11px;font-weight:700;margin-bottom:7px}
+    #pomodoro-271 .pm-taskinput{width:100%;border:0;outline:0;background:transparent;color:#4c4039;font-size:14px;padding:0;min-width:0}
+    #pomodoro-271 .pm-taskinput::placeholder{color:#baaca2}
+    #pomodoro-271 .pm-settings{margin-top:16px}
+    #pomodoro-271 .pm-settings summary{cursor:pointer;color:#a08d80;font-size:11px;font-weight:650;user-select:none;list-style:none;display:flex;align-items:center;gap:6px}
+    #pomodoro-271 .pm-settings summary:before{content:"⚙";font-size:13px}
+    #pomodoro-271 .pm-settings summary::-webkit-details-marker{display:none}
+    #pomodoro-271 .pm-settingsbody{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:15px}
+    #pomodoro-271 .pm-setting label{display:block;font-size:11px;color:#88766c;margin-bottom:6px}
+    #pomodoro-271 .pm-setting input{width:100%;min-width:0;border:1px solid #e4d7cb;border-radius:9px;background:white;padding:9px;font-size:13px;color:#4c4039}
+    #pomodoro-271 .pm-toggle{grid-column:1/-1;display:flex;align-items:center;gap:9px;font-size:12px;color:#756258;cursor:pointer}
+    #pomodoro-271 .pm-toggle input{accent-color:#d95442}
+    #pomodoro-271 .pm-help{text-align:center;color:#aea095;font-size:10px;margin:13px 0 0}
+    @media(max-width:390px){#pomodoro-271 .pm-header{padding:19px 17px}#pomodoro-271 .pm-modes{margin:0 14px}#pomodoro-271 .pm-mode{font-size:11px}#pomodoro-271 .pm-bottom{padding:19px 18px}#pomodoro-271 .pm-time{font-size:55px}}
+    @media(prefers-reduced-motion:reduce){#pomodoro-271 *{transition:none!important}}
+  </style>
+
+  <section class="pm-shell">
+    <div class="pm-header">
+      <div class="pm-brand">
+        <div class="pm-logo" aria-hidden="true">🍅</div>
+        <div>
+          <div class="pm-brand-title">小番茄 · Focus</div>
+          <div class="pm-brand-sub">一次只做好一件事</div>
+        </div>
+      </div>
+      <span id="pm-status" class="pm-status">准备就绪</span>
+    </div>
+
+    <div class="pm-modes" role="group" aria-label="计时模式">
+      <button class="pm-mode selected" type="button" data-mode="focus">专注 25′</button>
+      <button class="pm-mode" type="button" data-mode="short">短休息 5′</button>
+      <button class="pm-mode" type="button" data-mode="long">长休息 15′</button>
+    </div>
+
+    <div class="pm-display">
+      <div class="pm-ring" role="timer" aria-label="剩余时间">
+        <svg viewBox="0 0 280 280" aria-hidden="true">
+          <circle class="pm-track" cx="140" cy="140" r="123"></circle>
+          <circle id="pm-progress" class="pm-progress" cx="140" cy="140" r="123"></circle>
+        </svg>
+        <div class="pm-clockface">
+          <span id="pm-emoji" class="pm-emoji">🌱</span>
+          <span id="pm-time" class="pm-time">25:00</span>
+          <span id="pm-timelabel" class="pm-timelabel">专注时间</span>
+        </div>
+      </div>
+      <p id="pm-motivation" class="pm-motivation">放下干扰，让注意力回到当下。</p>
+    </div>
+
+    <div class="pm-controls">
+      <button type="button" class="pm-iconbtn" id="pm-reset" title="重新计时" aria-label="重新计时">
+        <svg viewBox="0 0 24 24"><path d="M3 11a9 9 0 1 1 2.4 6.1"></path><path d="M3 4v7h7"></path></svg>
+      </button>
+      <button type="button" class="pm-main" id="pm-toggle">
+        <svg id="pm-starticon" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z"></path></svg>
+        <span id="pm-togglelabel">开始专注</span>
+      </button>
+      <button type="button" class="pm-iconbtn" id="pm-skip" title="跳到下一阶段" aria-label="跳到下一阶段">
+        <svg viewBox="0 0 24 24"><path d="m5 5 10 7-10 7z"></path><path d="M19 5v14"></path></svg>
+      </button>
+    </div>
+
+    <div class="pm-bottom">
+      <div class="pm-sectiontop">
+        <span class="pm-sectiontitle">本轮番茄进度</span>
+        <span id="pm-count" class="pm-count">已完成 0 个 · 目标 4 个</span>
+      </div>
+      <div class="pm-tomatoes" id="pm-tomatoes" aria-label="本轮番茄数">
+        <span class="pm-tomato">🍅</span><span class="pm-tomato">🍅</span><span class="pm-tomato">🍅</span><span class="pm-tomato">🍅</span>
+      </div>
+      <div class="pm-taskbox">
+        <label for="pm-task" class="pm-tasklabel">🎯 当前专注任务</label>
+        <input id="pm-task" class="pm-taskinput" placeholder="今天想完成什么？" maxlength="100" autocomplete="off"/>
+      </div>
+      <details class="pm-settings">
+        <summary>自定义计时设置</summary>
+        <div class="pm-settingsbody">
+          <div class="pm-setting"><label for="pm-focus-min">专注（分钟）</label><input id="pm-focus-min" type="number" min="1" max="180" value="25"/></div>
+          <div class="pm-setting"><label for="pm-short-min">短休（分钟）</label><input id="pm-short-min" type="number" min="1" max="180" value="5"/></div>
+          <div class="pm-setting"><label for="pm-long-min">长休（分钟）</label><input id="pm-long-min" type="number" min="1" max="180" value="15"/></div>
+          <label class="pm-toggle"><input type="checkbox" id="pm-auto"/> 阶段结束后自动开始下一阶段</label>
+        </div>
+      </details>
+    </div>
+  </section>
+  <p class="pm-help">完成 4 个番茄后进入长休息 · 空格键可开始 / 暂停</p>
+
+  <script>
+    (function(){
+      const root=document.getElementById('pomodoro-271');
+      if(!root || root.dataset.initialized) return;
+      root.dataset.initialized='1';
+      const $=id=>root.querySelector('#'+id);
+      const durations={focus:25,short:5,long:15};
+      const labels={focus:'专注时间',short:'短暂休息',long:'好好放松'};
+      const icons={focus:'🌱',short:'☕',long:'🌤️'};
+      const messages={focus:'放下干扰，让注意力回到当下。',short:'休息一下，喝口水，活动活动。',long:'你已经很努力了，稍微放松一下吧。'};
+      const names={focus:'专注',short:'短休息',long:'长休息'};
+      const colors={focus:'#d95442',short:'#42998a',long:'#7385bb'};
+      const circumference=2*Math.PI*123;
+      const ring=$('pm-progress');
+      ring.style.strokeDasharray=circumference;
+      let mode='focus', remaining=1500, running=false, endAt=0, interval=null, completed=0, notice='';
+      const modeBtns=[...root.querySelectorAll('[data-mode]')];
+      const total=()=>durations[mode]*60;
+      const pad=n=>String(n).padStart(2,'0');
+      const format=s=>pad(Math.floor(s/60))+':'+pad(s%60);
+      const escapeTime=()=>{if(running)remaining=Math.max(0,Math.ceil((endAt-Date.now())/1000));};
+      function render(){
+        const t=format(remaining);
+        $('pm-time').textContent=t;
+        root.querySelector('.pm-ring').setAttribute('aria-label','剩余 '+t);
+        $('pm-emoji').textContent=icons[mode];
+        $('pm-timelabel').textContent=labels[mode];
+        $('pm-motivation').textContent=notice||messages[mode];
+        ring.style.stroke=colors[mode];
+        root.style.setProperty('--accent',colors[mode]);
+        ring.style.strokeDashoffset=String(circumference*(1-Math.max(0,Math.min(1,remaining/total()))));
+        $('pm-togglelabel').textContent=running?'暂停计时':remaining<total()?'继续计时':'开始'+names[mode];
+        $('pm-starticon').innerHTML=running?'<path d="M8 5v14M16 5v14"></path>':'<path d="m8 5 11 7-11 7z"></path>';
+        $('pm-status').textContent=running?'正在'+names[mode]:remaining<total()?'已暂停':'准备就绪';
+        $('pm-status').classList.toggle('active',running);
+        modeBtns.forEach(b=>{b.classList.toggle('selected',b.dataset.mode===mode);b.setAttribute('aria-pressed',String(b.dataset.mode===mode));b.textContent=names[b.dataset.mode]+' '+durations[b.dataset.mode]+'′';});
+        $('pm-count').textContent='已完成 '+completed+' 个 · 本轮 '+(completed%4||((completed&&mode==='long')?4:0))+'/4';
+        const filled=completed%4===0&&completed>0&&mode==='long'?4:completed%4;
+        root.querySelectorAll('.pm-tomato').forEach((el,i)=>el.classList.toggle('done',i<filled));
+        document.title='番茄钟 · '+t;
+      }
+      function stop(){
+        if(interval!==null){clearInterval(interval);interval=null;}
+        escapeTime();
+        running=false;
+      }
+      function selectMode(next){
+        stop();mode=next;remaining=total();notice='';render();
+      }
+      function start(){
+        if(running)return;
+        if(remaining<=0)remaining=total();
+        notice='';
+        running=true;
+        endAt=Date.now()+remaining*1000;
+        interval=setInterval(tick,200);
+        render();
+      }
+      function finish(){
+        stop();
+        remaining=0;
+        const previous=mode;
+        if(previous==='focus')completed++;
+        const next=previous==='focus'?(completed%4===0?'long':'short'):'focus';
+        const auto=$('pm-auto').checked;
+        notice=previous==='focus'?'🎉 又完成一个番茄！':'✨ 休息结束，准备下一轮。';
+        render();
+        setTimeout(()=>{
+          if(running||mode!==previous||remaining!==0)return;
+          selectMode(next);
+          if(auto)start();else{$('pm-motivation').textContent='上一阶段已完成 · '+messages[mode];}
+        },900);
+      }
+      function tick(){
+        if(!running)return;
+        remaining=Math.max(0,Math.ceil((endAt-Date.now())/1000));
+        if(remaining<=0){finish();return;}
+        render();
+      }
+      $('pm-toggle').addEventListener('click',()=>running?(stop(),render()):start());
+      $('pm-reset').addEventListener('click',()=>selectMode(mode));
+      $('pm-skip').addEventListener('click',()=>{const next=mode==='focus'?(completed>0&&completed%4===0?'long':'short'):'focus';selectMode(next);});
+      modeBtns.forEach(b=>b.addEventListener('click',()=>selectMode(b.dataset.mode)));
+      [['pm-focus-min','focus'],['pm-short-min','short'],['pm-long-min','long']].forEach(([id,key])=>{
+        $(id).addEventListener('change',e=>{
+          const n=Number(e.target.value);
+          durations[key]=Math.max(1,Math.min(180,Number.isFinite(n)&&n>0?Math.round(n):durations[key]));
+          e.target.value=durations[key];
+          if(mode===key)selectMode(mode);else render();
+        });
+      });
+      root.addEventListener('keydown',e=>{
+        if(e.code!=='Space'||e.repeat)return;
+        if(['INPUT','BUTTON','SUMMARY','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))return;
+        e.preventDefault();$('pm-toggle').click();
+      });
+      render();
+    })();
+  </script>
+</div>
