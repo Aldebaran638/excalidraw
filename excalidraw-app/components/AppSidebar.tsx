@@ -73,11 +73,7 @@ export const AppSidebar = ({ chats }: { chats: NoteChatController | null }) => {
   const { theme, openSidebar } = useUIAppState();
 
   return (
-    <DefaultSidebar
-      className={
-        openSidebar?.tab === "note-chat" ? "note-chat-sidebar" : undefined
-      }
-    >
+    <DefaultSidebar className="app-sidebar" forceDockOnSearch={false}>
       <DefaultSidebar.TabTriggers>
         <Sidebar.TabTrigger
           tab="note-chat"
@@ -99,7 +95,7 @@ export const AppSidebar = ({ chats }: { chats: NoteChatController | null }) => {
           {presentationIcon}
         </Sidebar.TabTrigger>
       </DefaultSidebar.TabTriggers>
-      <Sidebar.Tab tab="note-chat">
+      <Sidebar.Tab tab="note-chat" className="app-sidebar-chat-tab">
         {chats && <NoteChatPanel controller={chats} />}
       </Sidebar.Tab>
       <Sidebar.Tab tab="comments">

@@ -59,7 +59,7 @@ const SNAP_BACK_ANIMATION_DURATION = 250;
 const SCROLL_CONSTRAINTS_SNAP_BACK_DELAY = 200;
 
 /** single source of truth for the `--right-sidebar-width` CSS variable */
-export const RIGHT_SIDEBAR_WIDTH = 302;
+export const RIGHT_SIDEBAR_WIDTH = 360;
 
 /**
  * Approximate styles panel footprints (panel width + editor edge inset),

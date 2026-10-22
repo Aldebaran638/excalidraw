@@ -6,6 +6,11 @@
   color: var(--color-on-surface);
   font: 14px/1.65 system-ui, sans-serif;
   position: relative;
+  .note-chat-header,
+  .note-chat-session-row,
+  .note-chat-composer {
+    flex-shrink: 0;
+  }
   .excalidraw-button {
     width: auto;
     height: auto;
@@ -496,19 +501,6 @@
     color: var(--color-on-surface-variant);
   }
 }
-.excalidraw .note-chat-sidebar {
-  --right-sidebar-width: 360px;
-  .sidebar-tabs-root,
-  [role="tabpanel"] {
-    min-height: 0;
-  }
-  .sidebar-tabs-root {
-    padding: 0;
-  }
-  [role="tabpanel"][data-state="active"] {
-    overflow: hidden;
-  }
-}
 .note-chat-dialog {
   display: grid;
   gap: 20px;
@@ -542,15 +534,6 @@
   padding: 8px 12px;
 }
 @media (max-width: 730px) {
-  .excalidraw .note-chat-sidebar {
-    position: fixed;
-    inset: auto 8px 72px;
-    width: auto;
-    height: min(78dvh, 760px);
-    max-height: 78dvh;
-    border-radius: 14px;
-    overflow: hidden;
-  }
   .excalidraw .note-chat {
     .excalidraw-button,
     .note-chat-thinking,
@@ -577,6 +560,36 @@
     }
   }
 }
+// In short, wide viewports keep all input actions reachable without allowing
+// the chat content to push or shrink the shared sidebar header.
+@media (min-width: 480px) and (max-width: 730px) and (max-height: 560px) {
+  .excalidraw .note-chat .note-chat-composer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding-block: 8px;
+
+    > :not(textarea):not(.note-chat-compose-actions) {
+      grid-column: 1 / -1;
+    }
+
+    textarea {
+      height: 44px;
+      min-height: 44px;
+    }
+
+    .note-chat-compose-actions {
+      gap: 8px;
+      margin: 0;
+    }
+
+    .note-chat-context-hint {
+      display: none;
+    }
+  }
+}
+
 .note-chat-html-card {
   border: 1px solid var(--default-border-color);
   border-radius: 12px;

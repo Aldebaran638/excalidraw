@@ -1,10 +1,11 @@
 import React from "react";
 
-import { DEFAULT_SIDEBAR } from "@excalidraw/common";
+import { CANVAS_SEARCH_TAB, DEFAULT_SIDEBAR } from "@excalidraw/common";
 
-import { DefaultSidebar } from "../index";
+import { DefaultSidebar, Excalidraw } from "../index";
 import {
   fireEvent,
+  render,
   waitFor,
   withExcalidrawDimensions,
 } from "../tests/test-utils";
@@ -17,6 +18,37 @@ import {
 const { h } = window;
 
 describe("DefaultSidebar", () => {
+  it.each([undefined, false])(
+    "preserves native search docking unless the host opts out (%s)",
+    async (forceDockOnSearch) => {
+      await render(
+        <Excalidraw
+          initialData={{
+            appState: {
+              openSidebar: {
+                name: DEFAULT_SIDEBAR.name,
+                tab: CANVAS_SEARCH_TAB,
+              },
+            },
+          }}
+        >
+          <DefaultSidebar forceDockOnSearch={forceDockOnSearch} />
+        </Excalidraw>,
+      );
+      await withExcalidrawDimensions(
+        { width: 1920, height: 1080 },
+        async () => {
+          const { sidebar } = await assertSidebarDockButton(
+            forceDockOnSearch === false,
+          );
+          expect(sidebar.classList.contains("sidebar--docked")).toBe(
+            forceDockOnSearch !== false,
+          );
+          expect(h.state.defaultSidebarDockedPreference).toBe(false);
+        },
+      );
+    },
+  );
   it("when `docked={undefined}` & `onDock={undefined}`, should allow docking", async () => {
     await assertExcalidrawWithSidebar(
       <DefaultSidebar />,

@@ -61,12 +61,15 @@ export const DefaultSidebar = Object.assign(
       className,
       onDock,
       docked,
+      forceDockOnSearch = true,
       ...rest
     }: Merge<
       MarkOptional<Omit<SidebarProps, "name">, "children">,
       {
         /** pass `false` to disable docking */
         onDock?: SidebarProps["onDock"] | false;
+        /** Hosts may keep the same docking policy across every tab. */
+        forceDockOnSearch?: boolean;
       }
     >) => {
       const appState = useUIAppState();
@@ -74,7 +77,8 @@ export const DefaultSidebar = Object.assign(
 
       const { DefaultSidebarTabTriggersTunnel } = useTunnels();
 
-      const isForceDocked = appState.openSidebar?.tab === CANVAS_SEARCH_TAB;
+      const isForceDocked =
+        forceDockOnSearch && appState.openSidebar?.tab === CANVAS_SEARCH_TAB;
 
       return (
         <Sidebar
