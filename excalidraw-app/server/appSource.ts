@@ -4,6 +4,7 @@ import { parse as parseHtml } from "parse5";
 import { parse as parseJS } from "acorn";
 
 import { ChatError } from "./chatStore";
+import { SourceToolError } from "./sourceErrors";
 
 export const sourceHash = (source: string) =>
   createHash("sha256").update(source).digest("hex");
@@ -59,18 +60,8 @@ export const sourceErrorCode = (error: unknown) => {
   if (error instanceof AppSyntaxError) {
     return "syntax";
   }
-  const message = (error as Error).message || "";
-  if (/语法|script 标签|HTML 未完整/.test(message)) {
-    return "syntax";
-  }
-  if (/唯一匹配|范围重叠/.test(message)) {
-    return "replacement";
-  }
-  if (/哈希|版本|先读取/.test(message)) {
-    return "version_conflict";
-  }
-  if (/预算|分页/.test(message)) {
-    return "budget";
+  if (error instanceof SourceToolError) {
+    return error.code;
   }
   return error instanceof ChatError ? "invalid_request" : "storage";
 };
@@ -83,6 +74,23 @@ export const readSourcePage = (
   startColumn = 0,
 ) => {
   const lines = source.split("\n");
+  if (
+    !Number.isInteger(startLine) ||
+    startLine < 1 ||
+    startLine > lines.length ||
+    !Number.isInteger(lineCount) ||
+    lineCount < 1 ||
+    lineCount > 200 ||
+    !Number.isSafeInteger(startColumn) ||
+    startColumn < 0 ||
+    startColumn > lines[startLine - 1].length
+  ) {
+    throw new SourceToolError(
+      400,
+      "源码分页参数无效或超出文件范围",
+      "invalid_request",
+    );
+  }
   const page: string[] = [];
   let chars = 0;
   for (
@@ -111,7 +119,11 @@ export const readSourcePage = (
           }
         }
         if (!lower) {
-          throw new ChatError(422, "本轮阅读预算不足，请聚焦源码范围");
+          throw new SourceToolError(
+            422,
+            "本轮阅读预算不足，请聚焦源码范围",
+            "budget",
+          );
         }
         // Never split a UTF-16 surrogate pair at a page boundary.
         if (lower < rest.length && /[\uD800-\uDBFF]/.test(rest[lower - 1])) {
@@ -143,6 +155,71 @@ export const readSourcePage = (
   };
 };
 
+export const searchSource = (
+  source: string,
+  args: {
+    query: string;
+    cursor?: number;
+    limit?: number;
+    contextLines?: number;
+  },
+  maxChars: number,
+) => {
+  const lines = source.split("\n");
+  const matches: { line: number; column: number; context: string }[] = [];
+  const cursor = args.cursor ?? 0;
+  const context = args.contextLines ?? 1;
+  if (cursor > lines.length) {
+    throw new SourceToolError(
+      400,
+      "源码搜索位置超出文件范围",
+      "invalid_request",
+    );
+  }
+  let next: number | null = null;
+  for (let i = cursor; i < lines.length; i++) {
+    if (!lines[i].includes(args.query)) {
+      continue;
+    }
+    const item = {
+      line: i + 1,
+      column: lines[i].indexOf(args.query),
+      context: lines
+        .slice(Math.max(0, i - context), i + context + 1)
+        .map((line, n) => {
+          const number = Math.max(0, i - context) + n + 1;
+          const start =
+            number === i + 1 ? Math.max(0, line.indexOf(args.query) - 200) : 0;
+          return `${number}${start ? ` (column ${start})` : ""}: ${
+            start ? "…" : ""
+          }${line.slice(start, start + 1000)}`;
+        })
+        .join("\n"),
+    };
+    if (
+      matches.length >= (args.limit ?? 5) ||
+      JSON.stringify([...matches, item]).length + 250 > maxChars
+    ) {
+      next = i;
+      break;
+    }
+    matches.push(item);
+  }
+  if (next !== null && !matches.length) {
+    throw new SourceToolError(
+      422,
+      "本轮阅读预算不足，请缩小搜索上下文",
+      "budget",
+    );
+  }
+  return {
+    matches,
+    nextCursor: next,
+    totalLines: lines.length,
+    sourceHash: sourceHash(source),
+  };
+};
+
 export const validateAppSource = (source: string) => {
   if (
     typeof source !== "string" ||
@@ -156,7 +233,11 @@ export const validateAppSource = (source: string) => {
     sourceCodeLocationInfo: true,
     onParseError: (error) => {
       if (error.code.startsWith("eof-in-")) {
-        throw new ChatError(422, `HTML 未完整结束：${error.code}`);
+        throw new SourceToolError(
+          422,
+          `HTML 未完整结束：${error.code}`,
+          "html_incomplete",
+        );
       }
     },
   });
@@ -198,7 +279,11 @@ export const validateAppSource = (source: string) => {
         ["module", "text/javascript", "application/javascript"].includes(type)
       ) {
         if (!node.sourceCodeLocation?.endTag) {
-          throw new ChatError(422, "script 标签未完整闭合");
+          throw new SourceToolError(
+            422,
+            "script 标签未完整闭合",
+            "html_incomplete",
+          );
         }
         if (node.attrs?.some((a: any) => a.name === "src")) {
           throw new ChatError(422, "应用脚本必须自包含，不能加载外部源码");
@@ -261,7 +346,11 @@ export const replaceSource = (
   edits: { oldText: string; newText: string }[],
 ) => {
   if (hash !== sourceHash(source)) {
-    throw new ChatError(409, "源码版本已变化，请重新读取后修改");
+    throw new SourceToolError(
+      409,
+      "源码版本已变化，请重新读取后修改",
+      "version_conflict",
+    );
   }
   if (!Array.isArray(edits) || !edits.length || edits.length > 100) {
     throw new ChatError(400, "编辑列表无效");
@@ -279,16 +368,21 @@ export const replaceSource = (
       }
       const start = source.indexOf(edit.oldText);
       if (start < 0 || source.indexOf(edit.oldText, start + 1) >= 0) {
-        throw new ChatError(
+        throw new SourceToolError(
           409,
           "待替换内容必须唯一匹配，请重新读取更完整的上下文",
+          "replacement",
         );
       }
       return { start, end: start + edit.oldText.length, ...edit };
     })
     .sort((a, b) => a.start - b.start);
   if (ranges.some((range, i) => i > 0 && range.start < ranges[i - 1].end)) {
-    throw new ChatError(409, "编辑范围重叠，未应用任何修改");
+    throw new SourceToolError(
+      409,
+      "编辑范围重叠，未应用任何修改",
+      "replacement",
+    );
   }
   let next = source;
   for (const range of [...ranges].reverse()) {

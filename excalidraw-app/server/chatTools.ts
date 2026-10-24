@@ -1,6 +1,9 @@
+import Ajv from "ajv";
+
 import { readCanvasHtmlApp } from "../data/chatHtml";
 
 import { ChatError } from "./chatStore";
+import { SourceToolError } from "./sourceErrors";
 
 import type { NoteSnapshot } from "../data/chatTypes";
 
@@ -70,6 +73,16 @@ export const CHAT_WIDGET_TOOLS = [
 ];
 export const APP_SOURCE_TOOLS = [
   functionTool(
+    "search_app_source",
+    "Locate literal text ONLY in the selected source. Returns line numbers and sourceHash, bounded context and next cursor. Does NOT authorize edits: read_app_source is still required.",
+    {
+      query: { type: "string", minLength: 1, maxLength: 200 },
+      cursor: { type: "integer", minimum: 0 },
+      limit: { type: "integer", minimum: 1, maximum: 10 },
+      contextLines: { type: "integer", minimum: 0, maximum: 3 },
+    },
+  ),
+  functionTool(
     "read_app_source",
     "Read the explicitly selected application's source.html, with line numbers and sourceHash. Use startLine/lineCount for paging; follow nextLine/nextColumn for long lines (columns are zero-based UTF-16 offsets). Read before editing; no paths or other targets accepted.",
     {
@@ -100,6 +113,35 @@ export const APP_SOURCE_TOOLS = [
     },
   ),
 ];
+// The catalog and the server use the exact same parameter schemas.
+const sourceValidators = new Map(
+  APP_SOURCE_TOOLS.map((tool) => {
+    const parameters = {
+      ...tool.function.parameters,
+      required:
+        tool.function.name === "edit_app_source"
+          ? ["sourceHash", "edits"]
+          : tool.function.name === "search_app_source"
+          ? ["query"]
+          : [],
+    };
+    Object.assign(tool.function.parameters, { required: parameters.required });
+    return [
+      tool.function.name,
+      new Ajv({ allErrors: true }).compile(parameters),
+    ] as const;
+  }),
+);
+export function validateSourceArguments(name: string, args: unknown) {
+  const validate = sourceValidators.get(name);
+  if (!validate || !validate(args)) {
+    throw new SourceToolError(
+      400,
+      "源码工具参数无效：请遵循当前工具的参数定义",
+      "invalid_request",
+    );
+  }
+}
 export const sanitizeSnapshot = (value: unknown): NoteSnapshot => {
   const data = value as NoteSnapshot;
   if (

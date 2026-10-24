@@ -208,6 +208,36 @@ export const ChatHtmlCard = ({
             : "校验及保存中"}
         </span>
       </header>
+      {!!data?.styleDiagnostics?.length && (
+        <details className="note-chat-reading">
+          <summary>
+            样式警告 {data.styleDiagnostics.length} 项 · 可继续试用
+          </summary>
+          {data.styleDiagnostics.map((warning, i) => (
+            <div key={i}>
+              <p>
+                {warning.message}（HTML 第 {warning.line} 行，第{" "}
+                {warning.column} 列）
+              </p>
+              <pre className="note-chat-html-source">{warning.excerpt}</pre>
+            </div>
+          ))}
+          <ChatIconButton
+            label="继续修正样式"
+            icon={pencilIcon}
+            onClick={() => {
+              controller.setWorkspace(noteId, sessionId, data);
+              controller.setDraft(
+                noteId,
+                sessionId,
+                `请读取当前候选并局部修正这些样式警告，保留其他代码：${data
+                  .styleDiagnostics!.map((w) => w.message)
+                  .join("；")}`,
+              );
+            }}
+          />
+        </details>
+      )}
       {(data?.target || data?.editBase) && (
         <div className="note-chat-widget-compare">
           <button

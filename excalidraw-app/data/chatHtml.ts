@@ -1,6 +1,13 @@
 /** HTML applications share the same source format in chat and on the canvas. */
 import { validId } from "./noteIdentity";
 export type HtmlRef = { artifactId: string; version: number; kind: "html" };
+export type StyleDiagnostic = {
+  code: "css_parse" | "css_variable_cycle";
+  line: number;
+  column: number;
+  message: string;
+  excerpt: string;
+};
 export type HtmlRepair = {
   status: "pending" | "repairing" | "succeeded" | "failed" | "interrupted";
   attempts: number;
@@ -27,6 +34,8 @@ export type HtmlArtifact = HtmlRef & {
   editBase?: HtmlRef;
   changes?: { before: string; after: string }[];
   repair?: HtmlRepair;
+  styleDiagnostics?: StyleDiagnostic[];
+  candidateNumber?: number;
   recovery?: {
     base?:
       | { kind: "html"; artifactId: string; version: number }
@@ -105,6 +114,18 @@ export const isHtmlState = (value: unknown): value is HtmlState => {
   }
 };
 export type ChatBlock =
+  | {
+      id: string;
+      type: "protocol";
+      text: string;
+      status: "pending" | "correcting" | "resolved" | "failed";
+    }
+  | {
+      id: string;
+      type: "edit_result";
+      text: string;
+      application?: { elementId: string; appId: string; sourceHash: string };
+    }
   | { id: string; type: "text"; text: string }
   | { id: string; type: "reasoning"; text: string }
   | { id: string; type: "tool"; activityId: string }
@@ -120,6 +141,7 @@ export type ChatBlock =
       error?: string;
       draftSaved?: boolean;
       repair?: HtmlRepair;
+      candidateNumber?: number;
     };
 
 /** Markdown fence framing only. HTML tokenization belongs to the browser parser.

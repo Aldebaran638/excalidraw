@@ -1,5 +1,7 @@
 import type { ChatWidgetRef } from "./chatWidgets";
 import type { ChatBlock } from "./chatHtml";
+import type { ChatWorkspace } from "./chatWidgets";
+import type { HtmlRef, HtmlArtifact } from "./chatHtml";
 import type { WidgetGenerationProgress } from "../../packages/interactive-widgets/streamPreview";
 
 export type ChatStatus =
@@ -32,6 +34,15 @@ export type ChatMessage = {
   blocks?: ChatBlock[];
   error?: string;
 };
+export type AppWorkspace = {
+  generation: string;
+  selection?: ChatWorkspace;
+  base?: HtmlRef;
+  baseHash?: string;
+  target?: HtmlArtifact["target"];
+  head?: HtmlRef;
+  candidateNumber: number;
+};
 export type ChatSession = {
   version: 1;
   noteId: string;
@@ -42,6 +53,7 @@ export type ChatSession = {
   updatedAt: number;
   revision: number;
   messages: ChatMessage[];
+  appWorkspace?: AppWorkspace;
   previousVersions?: {
     id: string;
     createdAt: number;
@@ -58,6 +70,7 @@ export type NoteSnapshot = {
 export type ChatEvent = {
   type:
     | "start"
+    | "workspace"
     | "block"
     | "delta"
     | "reasoning"
@@ -83,5 +96,7 @@ export type ChatEvent = {
   saved?: boolean;
   artifact?: ChatWidgetRef;
   progress?: WidgetGenerationProgress;
+  workspace?: AppWorkspace;
+  revision?: number;
   toolCallId?: string;
 };

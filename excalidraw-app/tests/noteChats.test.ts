@@ -30,6 +30,21 @@ const browser = (fetch: typeof globalThis.fetch) => {
       clearTimeout(id),
   } as unknown as Window & typeof globalThis;
 };
+it("does not replace a newer session with a late workspace PATCH response", () => {
+  const controller = new NoteChatController(
+    browser(vi.fn() as typeof fetch),
+    async () => ({ noteId, name: "test" }),
+    () => ({ capturedAt: 0, elements: [] }),
+  );
+  // Access the state ingress directly to deterministically reproduce late PATCH delivery.
+  // eslint-disable-next-line dot-notation
+  controller["accept"]({ ...session, revision: 9, title: "较新版本" });
+  // eslint-disable-next-line dot-notation
+  controller["accept"]({ ...session, revision: 8, title: "迟到的旧响应" });
+  expect(controller.getState().sessions[`${noteId}/${session.id}`].title).toBe(
+    "较新版本",
+  );
+});
 const json = (data: unknown) => new Response(JSON.stringify(data));
 describe("application-owned chat controller", () => {
   it.each([true, false])(
@@ -156,7 +171,7 @@ describe("application-owned chat controller", () => {
     );
     expect(ownerWindow.location.reload).not.toHaveBeenCalled();
     expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({
-      "X-Chat-Protocol": "3",
+      "X-Chat-Protocol": "4",
       "X-Chat-Capabilities": "html-blocks",
     });
     controller.dispose();

@@ -8,6 +8,7 @@ import { isHtmlState } from "../data/chatHtml";
 
 import { ChatError, ChatStore } from "./chatStore";
 import { sourceHash, validateAppSource } from "./appSource";
+import { diagnoseStyles } from "./styleDiagnostics";
 
 import type { HtmlArtifact, HtmlState } from "../data/chatHtml";
 
@@ -232,6 +233,7 @@ export class ChatHtmlStore {
       }
       if (data.complete) {
         validateAppSource(data.source);
+        next.styleDiagnostics = diagnoseStyles(data.source);
       }
       const folder = this.versionFolder(
         data.noteId,

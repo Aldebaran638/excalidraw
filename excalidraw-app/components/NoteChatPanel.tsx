@@ -425,6 +425,43 @@ export const NoteChatPanel = ({
                     </details>
                   );
                 }
+                if (block.type === "protocol") {
+                  return (
+                    <details key={block.id} className="note-chat-reading">
+                      <summary>
+                        {block.status === "correcting"
+                          ? "调用未执行，正在纠正工具协议…"
+                          : block.status === "resolved"
+                          ? "未执行的调用已通过真实工具补正"
+                          : "模型输出了未执行的工具调用"}
+                      </summary>
+                      <p>以下内容只是模型正文，不是实际操作记录。</p>
+                      <pre className="note-chat-html-source">{block.text}</pre>
+                    </details>
+                  );
+                }
+                if (block.type === "edit_result") {
+                  const current = block.application
+                    ? controller.htmlHost?.read(block.application.elementId)
+                    : null;
+                  const applied =
+                    current &&
+                    current.appId === block.application?.appId &&
+                    current.sourceHash === block.application?.sourceHash;
+                  return (
+                    <p
+                      key={block.id}
+                      className="note-chat-edit-result"
+                      role="status"
+                    >
+                      {applied
+                        ? /未完成|未执行/.test(block.text)
+                          ? "该候选已应用到画布；本轮仍有未完成的后续操作"
+                          : "该候选已应用到画布"
+                        : block.text}
+                    </p>
+                  );
+                }
                 return noteId && selected ? (
                   <ChatHtmlCard
                     key={block.id}
@@ -668,22 +705,79 @@ export const NoteChatPanel = ({
                       )?.title || "目标已不存在"
                     }`
                   : `聊天作品 · v${workspace.version}`}
+                {session.appWorkspace?.head &&
+                  session.appWorkspace.generation ===
+                    ui?.workspaceGenerations?.[selected] &&
+                  session.appWorkspace.candidateNumber > 0 &&
+                  ` · ${
+                    session.appWorkspace.target
+                      ? `正式版 v${session.appWorkspace.target.version} → `
+                      : ""
+                  }候选第 ${session.appWorkspace.candidateNumber} 版 · 未应用`}
               </span>
-              <button
-                type="button"
-                aria-label="更换创作目标"
+              <ChatIconButton
+                label="更换目标或编辑起点"
+                icon={pencilIcon}
                 onClick={() => setChoosingWidget(!choosingWidget)}
-              >
-                更换
-              </button>
-              <button
-                type="button"
-                aria-label="移除当前创作目标"
+              />
+              <ChatIconButton
+                label="移除当前创作目标"
+                icon={CloseIcon}
                 onClick={() => controller.setWorkspace(noteId, selected)}
-              >
-                ×
-              </button>
+              />
             </div>
+          )}
+          {choosingWidget && (
+            <select
+              aria-label="选择编辑起点"
+              defaultValue=""
+              onChange={(event) => {
+                if (!event.target.value) {
+                  return;
+                }
+                const ref = JSON.parse(event.target.value);
+                controller.setWorkspace(noteId, selected, ref);
+                setChoosingWidget(false);
+              }}
+            >
+              <option value="">选择编辑起点（不会应用到画布）…</option>
+              {session.appWorkspace?.target && (
+                <option
+                  value={JSON.stringify({
+                    kind: "element",
+                    elementId: session.appWorkspace.target.elementId,
+                  })}
+                >
+                  从画布正式版重新开始
+                </option>
+              )}
+              {[
+                ...new Map(
+                  session.messages.flatMap((m) =>
+                    (m.blocks || []).flatMap((block) =>
+                      block.type === "html" && block.complete && block.saved
+                        ? [
+                            [
+                              `${block.ref.artifactId}/${block.ref.version}`,
+                              block,
+                            ] as const,
+                          ]
+                        : [],
+                    ),
+                  ),
+                ).values(),
+              ].map((block) => (
+                <option
+                  key={`${block.ref.artifactId}/${block.ref.version}`}
+                  value={JSON.stringify(block.ref)}
+                >
+                  {block.candidateNumber
+                    ? `候选第 ${block.candidateNumber} 版`
+                    : `聊天作品 v${block.ref.version}`}{" "}
+                  · {block.ref.artifactId.slice(0, 6)}
+                </option>
+              ))}
+            </select>
           )}
           {selected && ui?.recoveries?.[selected] && (
             <div className="note-chat-workspace">

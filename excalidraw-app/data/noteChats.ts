@@ -52,6 +52,7 @@ type UI = {
   unread?: Record<string, boolean>;
   thinking?: boolean;
   workspaces?: Record<string, ChatWorkspace | undefined>;
+  workspaceGenerations?: Record<string, string>;
   recoveries?: Record<
     string,
     { artifactId: string; version: number } | undefined
@@ -102,6 +103,7 @@ export class NoteChatController {
   public widgetHost?: ChatWidgetHost;
   public htmlHost?: HtmlChatHost;
   private htmlTrials = new Map<string, HtmlState>();
+  private workspaceWrites = new Map<string, Promise<void>>();
   setHtmlTrial(
     noteId: string,
     sessionId: string,
@@ -314,16 +316,74 @@ export class NoteChatController {
   }
   setWorkspace(noteId: string, sessionId: string, workspace?: ChatWorkspace) {
     const ui = this.state.ui[noteId] || blankUI();
+    // Normalize references: never persist/transmit the source passed with a card.
+    workspace =
+      workspace?.kind === "element"
+        ? { kind: "element", elementId: workspace.elementId }
+        : workspace
+        ? {
+            kind: workspace.kind,
+            artifactId: workspace.artifactId,
+            version: workspace.version,
+          }
+        : undefined;
+    const generation = randomId();
     this.saveUI(noteId, {
       ...ui,
       workspaces: { ...ui.workspaces, [sessionId]: workspace },
       recoveries: { ...ui.recoveries, [sessionId]: undefined },
+      workspaceGenerations: {
+        ...ui.workspaceGenerations,
+        [sessionId]: generation,
+      },
     });
+    const key = `${noteId}/${sessionId}`;
+    const previous = this.workspaceWrites.get(key) || Promise.resolve();
+    const write = previous
+      .catch(() => {})
+      .then(async () => {
+        const session = this.state.sessions[key];
+        if (!session) {
+          throw new Error("请先加载当前会话再选择目标");
+        }
+        const response = await this.ownerWindow.fetch(
+          this.url(noteId, sessionId),
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", ...CHAT_HEADERS },
+            body: JSON.stringify({
+              revision: session.revision,
+              expectedWorkspaceGeneration:
+                session.appWorkspace?.generation || null,
+              workspace: { generation, selection: workspace },
+            }),
+          },
+        );
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || "创作目标尚未保存");
+        }
+        this.accept(result);
+      });
+    this.workspaceWrites.set(key, write);
+    void write.catch((error) => {
+      this.state.errors = { ...this.state.errors, [key]: error.message };
+      this.emit();
+    });
+    void write.then(
+      () => {
+        if (this.workspaceWrites.get(key) === write) {
+          this.workspaceWrites.delete(key);
+        }
+      },
+      () => {},
+    );
   }
   recoverHtml(noteId: string, sessionId: string, data: HtmlArtifact) {
     if (!data.recovery) {
       return;
     }
+    this.setWorkspace(noteId, sessionId, data.recovery.base);
     const ui = this.state.ui[noteId] || blankUI();
     this.saveUI(noteId, {
       ...ui,
@@ -615,6 +675,30 @@ export class NoteChatController {
   private accept(session: ChatSession, batched = false) {
     const key = `${session.noteId}/${session.id}`;
     const previous = this.state.sessions[key];
+    if (previous && session.revision < previous.revision) {
+      return;
+    }
+    const workspace = session.appWorkspace;
+    const ui = this.state.ui[session.noteId] || blankUI();
+    if (
+      workspace &&
+      (!previous || session.revision >= previous.revision) &&
+      (!this.workspaceWrites.has(key) ||
+        ui.workspaceGenerations?.[session.id] === workspace.generation)
+    ) {
+      this.saveUI(
+        session.noteId,
+        {
+          ...ui,
+          workspaces: { ...ui.workspaces, [session.id]: workspace.selection },
+          workspaceGenerations: {
+            ...ui.workspaceGenerations,
+            [session.id]: workspace.generation,
+          },
+        },
+        false,
+      );
+    }
     session = {
       ...session,
       messages: session.messages.map((message) => {
@@ -881,6 +965,27 @@ export class NoteChatController {
     }
     const snapshot = this.capture();
     const documentSession = this.state.context.documentSession;
+    const legacySelection = this.state.ui[noteId]?.workspaces?.[id];
+    if (
+      legacySelection &&
+      !session.appWorkspace &&
+      !this.workspaceWrites.has(key)
+    ) {
+      this.setWorkspace(noteId, id, legacySelection);
+    }
+    try {
+      await this.workspaceWrites.get(key);
+    } catch {
+      return;
+    }
+    if (
+      this.active.has(key) ||
+      this.state.context.noteId !== noteId ||
+      this.state.context.documentSession !== documentSession
+    ) {
+      return;
+    }
+    const currentSession = this.state.sessions[key] || session;
     const workspace = this.state.ui[noteId]?.workspaces?.[id];
     const artifact =
       workspace?.kind === "artifact"
@@ -907,6 +1012,7 @@ export class NoteChatController {
             thinking: this.state.ui[noteId]?.thinking === true,
             snapshot,
             workspace,
+            workspaceGeneration: currentSession.appWorkspace?.generation,
             appIntent: workspace ? "edit" : "create",
             recovery: this.state.ui[noteId]?.recoveries?.[id],
             workspaceState: artifact
@@ -914,12 +1020,16 @@ export class NoteChatController {
                   this.artifactKey(noteId, id, artifact),
                   artifact,
                 ).state
+              : currentSession.appWorkspace?.head
+              ? this.htmlTrials.get(
+                  `${noteId}/${id}/${currentSession.appWorkspace.head.artifactId}/${currentSession.appWorkspace.head.version}`,
+                )
               : workspace?.kind === "html"
               ? this.htmlTrials.get(
                   `${noteId}/${id}/${workspace.artifactId}/${workspace.version}`,
                 )
               : undefined,
-            revision: session.revision,
+            revision: currentSession.revision,
             noteName: this.state.context.name,
           }),
         },
@@ -951,6 +1061,23 @@ export class NoteChatController {
         }
         if (event.session) {
           this.accept(event.session, true);
+        }
+        if (
+          event.type === "workspace" &&
+          event.workspace &&
+          event.revision !== undefined
+        ) {
+          const current = this.state.sessions[key];
+          if (current && event.revision >= current.revision) {
+            this.accept(
+              {
+                ...current,
+                revision: event.revision,
+                appWorkspace: event.workspace,
+              },
+              true,
+            );
+          }
         }
         const buildKey = `${key}/${turnId}/${event.toolCallId}`;
         if (

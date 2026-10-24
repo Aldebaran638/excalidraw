@@ -240,6 +240,12 @@ export class ChatStore {
                 message.status = "interrupted";
                 for (const block of message.blocks || []) {
                   if (
+                    block.type === "protocol" &&
+                    block.status !== "resolved"
+                  ) {
+                    block.status = "failed";
+                  }
+                  if (
                     block.type === "html" &&
                     block.repair &&
                     ["pending", "repairing"].includes(block.repair.status)

@@ -1,4 +1,5 @@
 import { installIframeOverlayScrollbars } from "./iframeOverlayScrollbars";
+import { HTML_THEME_CSS } from "./htmlEnvironment";
 
 import type { HtmlState } from "./chatHtml";
 
@@ -10,6 +11,7 @@ function bootstrap(
   runtimeVersion: number,
   captureSource: string,
   installScrollbars: typeof installIframeOverlayScrollbars,
+  themeCSS: string,
 ) {
   const win = window;
   // Opening from an inline script while its parser is active is ignored by
@@ -681,7 +683,7 @@ function bootstrap(
         true,
       );
       doc.write(`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
-  :root{color-scheme:light dark;--surface:light-dark(#fff,#232329);--text:light-dark(#1b1b1f,#f0f0f3);--muted:light-dark(#666,#bbb);--accent:#6965db;--border:light-dark(#e6e6eb,#45454b)}
+  ${themeCSS}
   *{box-sizing:border-box}body{margin:0;padding:16px;font:14px/1.6 system-ui,sans-serif;background:var(--surface);color:var(--text);overflow-wrap:anywhere}label{display:block;font-weight:500;margin-block:6px}input,select,textarea,button{font:inherit;max-width:100%}input:not([type=checkbox]):not([type=radio]),select,textarea{width:100%}input,select,button{min-height:44px}button,.button{cursor:pointer;border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:inherit;background:var(--surface)}input,select,textarea{padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit}.card{padding:16px;border:1px solid var(--border);border-radius:12px}.row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}.col{display:flex;flex-direction:column;gap:12px}.muted{color:var(--muted)}svg,canvas{max-width:100%}pre,table{max-width:100%;overflow:auto}img{max-width:100%}
   </style></head><body>`);
       disposeScrollbars = installScrollbars(doc);
@@ -703,5 +705,7 @@ export const htmlBootstrap = (
     runtimeVersion,
     captureScript,
   ]).replace(/</g, "\\u003c");
-  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'"><script>(${bootstrap.toString()})(...${args},${installIframeOverlayScrollbars.toString()})</script>`;
+  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'"><script>(${bootstrap.toString()})(...${args},${installIframeOverlayScrollbars.toString()},${JSON.stringify(
+    HTML_THEME_CSS,
+  )})</script>`;
 };
