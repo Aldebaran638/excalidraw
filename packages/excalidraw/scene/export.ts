@@ -59,7 +59,10 @@ import { Fonts } from "../fonts";
 import { renderStaticScene } from "../renderer/staticScene";
 import { renderSceneToSvg } from "../renderer/staticSvgScene";
 
-import { prepareEmbeddableSnapshots } from "./embeddableSnapshots";
+import {
+  prepareEmbeddableSnapshots,
+  captureEmbeddableSnapshots,
+} from "./embeddableSnapshots";
 
 import type { RenderableElementsMap } from "./types";
 
@@ -210,6 +213,7 @@ export const exportToCanvas = async (
 ) => {
   // load font faces before continuing, by default leverages browsers' [FontFace API](https://developer.mozilla.org/en-US/docs/Web/API/FontFace)
   await loadFonts();
+  await captureEmbeddableSnapshots(elements);
   const preparedSnapshots = prepareEmbeddableSnapshots(elements, files);
   elements = preparedSnapshots.elements;
   files = preparedSnapshots.files;
@@ -320,6 +324,7 @@ export const exportToSvg = async (
 ): Promise<SVGSVGElement> => {
   const originalElements = elements;
   const originalFiles = files;
+  await captureEmbeddableSnapshots(elements);
   const preparedSnapshots = prepareEmbeddableSnapshots(elements, files || {});
   elements = preparedSnapshots.elements;
   files = preparedSnapshots.files;

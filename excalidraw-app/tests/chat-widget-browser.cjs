@@ -24,10 +24,13 @@ const until = async (test, label) => {
   throw new Error(`Timed out: ${label}`);
 };
 const button = async (page, label, root = ".note-chat") => {
+  label = label === "发送 ↑" ? "发送消息" : label;
   const handle = await page.evaluateHandle(
     (label, root) =>
       [...document.querySelectorAll(`${root} button`)].find(
-        (node) => node.textContent.trim() === label,
+        (node) =>
+          node.textContent.trim() === label ||
+          node.getAttribute("aria-label") === label,
       ),
     label,
     root,

@@ -1,8 +1,16 @@
+import { installIframeOverlayScrollbars } from "./iframeOverlayScrollbars";
+
 import type { HtmlState } from "./chatHtml";
 
 /** Runs only inside an opaque-origin sandbox. Native document parser retains
  * incomplete HTML/script tokens between writes and executes each script once. */
-function bootstrap(token: string, initial: HtmlState, runtimeVersion: number) {
+function bootstrap(
+  token: string,
+  initial: HtmlState,
+  runtimeVersion: number,
+  captureSource: string,
+  installScrollbars: typeof installIframeOverlayScrollbars,
+) {
   const win = window;
   // Opening from an inline script while its parser is active is ignored by
   // browsers. Wait for the bootstrap load, then keep our own parser open.
@@ -10,10 +18,26 @@ function bootstrap(token: string, initial: HtmlState, runtimeVersion: number) {
     "load",
     () => {
       const doc = win.document;
+      let capturePng:
+        | ((node: HTMLElement, options: unknown) => Promise<string>)
+        | undefined;
       const state = initial;
       let ended = false;
-      const send = (type: string, data?: unknown) =>
+      let historyEnabled = false;
+      let stateScheduled = false;
+      const send = (type: string, data?: unknown) => {
+        if (type === "state") {
+          if (!stateScheduled) {
+            stateScheduled = true;
+            win.queueMicrotask(() => {
+              stateScheduled = false;
+              win.parent.postMessage({ token, type, data: state }, "*");
+            });
+          }
+          return;
+        }
         win.parent.postMessage({ token, type, data }, "*");
+      };
       const policy =
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src 'none'; connect-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
       doc.open();
@@ -31,6 +55,7 @@ function bootstrap(token: string, initial: HtmlState, runtimeVersion: number) {
       >();
       const regions = new Set<Element>();
       let disposed = false;
+      let disposeScrollbars = () => {};
       const keyFor = (key: string) => {
         if (typeof key !== "string" || !key || key.length > 200) {
           throw new Error("生命周期 key 不正确");
@@ -67,6 +92,7 @@ function bootstrap(token: string, initial: HtmlState, runtimeVersion: number) {
         }
         disposed = true;
         ended = true;
+        disposeScrollbars();
         for (const timer of timers.values()) {
           win.clearInterval(timer.id);
         }
@@ -411,8 +437,151 @@ function bootstrap(token: string, initial: HtmlState, runtimeVersion: number) {
             event.data.data === "dark" ? "dark" : "light";
           return;
         }
+        if (event.data.type === "history_support") {
+          historyEnabled = event.data.data === true;
+          return;
+        }
         if (event.data.type === "dispose") {
           cleanup();
+          return;
+        }
+        if (event.data.type === "capture") {
+          if (
+            !captureSource &&
+            typeof event.data.data?.library === "string" &&
+            event.data.data.library.length < 200000
+          ) {
+            captureSource = event.data.data.library;
+          }
+          const requestId = event.data.requestId;
+          void (async () => {
+            let holder: HTMLElement | undefined;
+            try {
+              if (!capturePng && captureSource) {
+                const library = doc.createElement("script");
+                library.textContent = captureSource;
+                doc.head.appendChild(library);
+                capturePng = (win as any).htmlToImage?.toPng;
+                library.remove();
+              }
+              if (!capturePng || !ended) {
+                throw new Error("应用尚未就绪，无法导出当前画面");
+              }
+              const width = Math.ceil(win.innerWidth);
+              const height = Math.ceil(win.innerHeight);
+              if (width * height > 4000000) {
+                throw new Error("组件尺寸超过快照上限，请缩小后重试");
+              }
+              const clone = (original: Element): Element | null => {
+                if (
+                  ["SCRIPT", "STYLE", "LINK", "META", "IFRAME"].includes(
+                    original.tagName,
+                  )
+                ) {
+                  return null;
+                }
+                let copy: Element;
+                if (original instanceof win.HTMLCanvasElement) {
+                  copy = doc.createElement("img");
+                  copy.setAttribute("src", original.toDataURL());
+                } else if (original === doc.body) {
+                  copy = doc.createElement("div");
+                } else {
+                  copy = original.cloneNode(false) as Element;
+                }
+                if ((copy as HTMLElement).style) {
+                  const style = win.getComputedStyle(original);
+                  for (const key of Array.from(style)) {
+                    (copy as HTMLElement).style.setProperty(
+                      key,
+                      style.getPropertyValue(key),
+                    );
+                  }
+                  (copy as HTMLElement).style.setProperty("animation", "none");
+                  (copy as HTMLElement).style.setProperty("transition", "none");
+                  (copy as HTMLElement).style.setProperty(
+                    "caret-color",
+                    "transparent",
+                  );
+                }
+                for (const attr of Array.from(copy.attributes)) {
+                  if (attr.name.startsWith("on")) {
+                    copy.removeAttribute(attr.name);
+                  }
+                }
+                if (!(original instanceof win.HTMLCanvasElement)) {
+                  for (const child of Array.from(original.childNodes)) {
+                    const value =
+                      child.nodeType === 1
+                        ? clone(child as Element)
+                        : child.cloneNode(true);
+                    if (value) {
+                      copy.appendChild(value);
+                    }
+                  }
+                }
+                if (original instanceof win.HTMLInputElement) {
+                  (copy as HTMLInputElement).value = original.value;
+                  (copy as HTMLInputElement).checked = original.checked;
+                  if (original.checked) {
+                    copy.setAttribute("checked", "");
+                  } else {
+                    copy.removeAttribute("checked");
+                  }
+                }
+                if (original instanceof win.HTMLTextAreaElement) {
+                  (copy as HTMLTextAreaElement).value = original.value;
+                }
+                if (original instanceof win.HTMLSelectElement) {
+                  (copy as HTMLSelectElement).value = original.value;
+                }
+                if (original.scrollLeft || original.scrollTop) {
+                  const style = (copy as HTMLElement).style;
+                  if (style) {
+                    style.overflow = "hidden";
+                    for (const child of Array.from(copy.children)) {
+                      if ((child as HTMLElement).style) {
+                        const childStyle = (child as HTMLElement).style;
+                        childStyle.transform = `translate(${-original.scrollLeft}px,${-original.scrollTop}px) ${
+                          childStyle.transform === "none"
+                            ? ""
+                            : childStyle.transform
+                        }`;
+                      }
+                    }
+                  }
+                }
+                return copy;
+              };
+              holder = doc.createElement("div");
+              holder.style.cssText = `position:fixed;left:0;top:0;z-index:-2147483647;width:${width}px;height:${height}px;overflow:hidden;pointer-events:none;`;
+              holder.style.backgroundColor = win.getComputedStyle(
+                doc.body,
+              ).backgroundColor;
+              const copied = clone(doc.body) as HTMLElement;
+              copied.style.margin = "0";
+              copied.style.transform = `translate(${-win.scrollX}px,${-win.scrollY}px)`;
+              holder.appendChild(copied);
+              doc.documentElement.appendChild(holder);
+              const png = await capturePng(holder, {
+                width,
+                height,
+                pixelRatio: 1.5,
+                skipFonts: true,
+                style: {
+                  left: "0",
+                  top: "0",
+                  position: "relative",
+                  zIndex: "auto",
+                },
+              });
+              send("capture_result", { requestId, png, width, height });
+            } catch (error) {
+              send("capture_result", { requestId, error: String(error) });
+            } finally {
+              holder?.remove();
+            }
+          })();
           return;
         }
         if (ended) {
@@ -440,6 +609,27 @@ function bootstrap(token: string, initial: HtmlState, runtimeVersion: number) {
         send("error", String(event.reason)),
       );
       win.addEventListener("keydown", (event) => {
+        if (
+          event.key === "Enter" &&
+          (event.target as Element)?.closest?.("input")
+        ) {
+          send("state", state);
+        }
+        if (
+          historyEnabled &&
+          (event.ctrlKey || event.metaKey) &&
+          ["z", "y"].includes(event.key.toLowerCase()) &&
+          !(event.target as Element)?.closest?.(
+            'input,textarea,select,[contenteditable="true"]',
+          )
+        ) {
+          event.preventDefault();
+          send(
+            "history",
+            event.shiftKey || event.key.toLowerCase() === "y" ? "redo" : "undo",
+          );
+          return;
+        }
         if (event.key === "Escape") {
           send("escape");
         }
@@ -455,10 +645,15 @@ function bootstrap(token: string, initial: HtmlState, runtimeVersion: number) {
             value: node.value,
             ...("checked" in node ? { checked: node.checked } : {}),
           };
-          send("state", state);
+          send("state_preview", state);
         }
       });
       doc.addEventListener("change", () => send("state", state));
+      doc.addEventListener("focusout", (event) => {
+        if ((event.target as Element)?.closest?.("input,textarea,select")) {
+          send("state", state);
+        }
+      });
       doc.addEventListener(
         "DOMContentLoaded",
         () => {
@@ -489,6 +684,7 @@ function bootstrap(token: string, initial: HtmlState, runtimeVersion: number) {
   :root{color-scheme:light dark;--surface:light-dark(#fff,#232329);--text:light-dark(#1b1b1f,#f0f0f3);--muted:light-dark(#666,#bbb);--accent:#6965db;--border:light-dark(#e6e6eb,#45454b)}
   *{box-sizing:border-box}body{margin:0;padding:16px;font:14px/1.6 system-ui,sans-serif;background:var(--surface);color:var(--text);overflow-wrap:anywhere}label{display:block;font-weight:500;margin-block:6px}input,select,textarea,button{font:inherit;max-width:100%}input:not([type=checkbox]):not([type=radio]),select,textarea{width:100%}input,select,button{min-height:44px}button,.button{cursor:pointer;border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:inherit;background:var(--surface)}input,select,textarea{padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit}.card{padding:16px;border:1px solid var(--border);border-radius:12px}.row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}.col{display:flex;flex-direction:column;gap:12px}.muted{color:var(--muted)}svg,canvas{max-width:100%}pre,table{max-width:100%;overflow:auto}img{max-width:100%}
   </style></head><body>`);
+      disposeScrollbars = installScrollbars(doc);
       send("ready");
     },
     { once: true },
@@ -499,10 +695,13 @@ export const htmlBootstrap = (
   token: string,
   state: HtmlState,
   runtimeVersion = 1,
+  captureScript = "",
 ) => {
-  const args = JSON.stringify([token, state, runtimeVersion]).replace(
-    /</g,
-    "\\u003c",
-  );
-  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'"><script>(${bootstrap.toString()})(...${args})</script>`;
+  const args = JSON.stringify([
+    token,
+    state,
+    runtimeVersion,
+    captureScript,
+  ]).replace(/</g, "\\u003c");
+  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'"><script>(${bootstrap.toString()})(...${args},${installIframeOverlayScrollbars.toString()})</script>`;
 };

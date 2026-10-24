@@ -69,6 +69,82 @@ const choice = (delta: object, finish_reason: string | null = null) => ({
   choices: [{ delta, finish_reason }],
 });
 describe("note-owned chat", () => {
+  it("edits and regenerates historical questions without losing the original conversation", async () => {
+    const { dir, noteId } = await fixture();
+    const inputs: string[] = [];
+    const transport: typeof fetch = async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      expect(request.max_tokens).toBe(32768);
+      inputs.push(JSON.stringify(request.messages));
+      return stream([
+        choice({ content: `answer-${inputs.length}` }),
+        choice({}, "stop"),
+      ]);
+    };
+    const service = await createChatService(
+      dir,
+      { baseUrl: "http://fixture", model: "qwen" },
+      transport,
+    );
+    cleanups.push(service.close);
+    const base = `${await serve(service.handle)}/api/notes/${noteId}/chats`;
+    let session = (await (
+      await fetch(base, { method: "POST" })
+    ).json()) as ChatSession;
+    const send = async (
+      content: string,
+      replaceMessageId?: string,
+      revision = session.revision,
+    ) => {
+      const response = await fetch(`${base}/${session.id}/turns`, {
+        method: "POST",
+        body: JSON.stringify({
+          turnId: randomUUID(),
+          content,
+          replaceMessageId,
+          revision,
+          snapshot: { capturedAt: Date.now(), elements: [] },
+        }),
+      });
+      if (!response.ok) {
+        return response.status;
+      }
+      for await (const frame of readSSE(response.body!)) {
+        const event = JSON.parse(frame.data) as ChatEvent;
+        if (event.session) {
+          session = event.session;
+        }
+      }
+      return response.status;
+    };
+    await send("original-question");
+    const originalQuestion = session.messages[0];
+    await send("later-question");
+    const original = structuredClone(session.messages);
+    expect(await send("edited-question", originalQuestion.id, 0)).toBe(409);
+    expect(await send("edited-question", randomUUID())).toBe(400);
+    expect(await send("edited-question", originalQuestion.id)).toBe(200);
+    expect(session.messages.map((m) => m.content)).toEqual([
+      "edited-question",
+      "answer-3",
+    ]);
+    expect(session.previousVersions?.[0].messages).toEqual(original);
+    expect(inputs.at(-1)).not.toContain("later-question");
+    expect(inputs.at(-1)).not.toContain("original-question");
+    const edited = structuredClone(session.messages);
+    await send("edited-question", session.messages[0].id);
+    expect(session.messages.map((m) => m.content)).toEqual([
+      "edited-question",
+      "answer-4",
+    ]);
+    expect(session.previousVersions?.[1].messages).toEqual(edited);
+    const stored = await new ChatStore(dir).read(noteId, session.id);
+    expect(stored.previousVersions).toEqual(session.previousVersions);
+    expect(await new ChatStore(dir).list(noteId)).not.toHaveProperty(
+      "0.previousVersions",
+    );
+    expect(inputs).toHaveLength(4);
+  });
   it.each([false, true])(
     "forwards thinking=%s and streams reasoning separately from answers",
     async (thinking) => {

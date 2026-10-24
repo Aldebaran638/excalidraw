@@ -95,7 +95,7 @@ export class ChatStore {
     }
     return sessions
       .sort((a, b) => b.updatedAt - a.updatedAt)
-      .map(({ messages, ...rest }) => ({
+      .map(({ messages, previousVersions, ...rest }) => ({
         ...rest,
         generating: messages.some((message) => message.status === "generating"),
       }));

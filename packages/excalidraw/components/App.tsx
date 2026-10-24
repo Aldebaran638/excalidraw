@@ -3,11 +3,7 @@ import throttle from "lodash.throttle";
 import React, { useContext } from "react";
 import { flushSync } from "react-dom";
 import rough from "roughjs/bin/rough";
-import {
-  controlsAncestor,
-  embeddedControlsCanScroll,
-  observeEmbeddedPinch,
-} from "../embeddableControls";
+
 import { nanoid } from "nanoid";
 
 import {
@@ -298,6 +294,12 @@ import type {
 import type { ArrowEndpoint } from "@excalidraw/element";
 
 import type { Mutable, ValueOf } from "@excalidraw/common/utility-types";
+
+import {
+  controlsAncestor,
+  embeddedControlsCanScroll,
+  observeEmbeddedPinch,
+} from "../embeddableControls";
 
 import {
   actionAddToLibrary,
@@ -792,6 +794,10 @@ class App extends React.Component<AppProps, AppState> {
         this.getSceneElementsMapIncludingDeleted,
       history: {
         clear: this.resetHistory,
+        undo: () =>
+          this.actionManager.executeAction(createUndoAction(this.history)),
+        redo: () =>
+          this.actionManager.executeAction(createRedoAction(this.history)),
       },
       setViewport: this.viewport.setViewport,
       getViewportOffsets: this.viewport.getOffsets,
@@ -1825,7 +1831,8 @@ class App extends React.Component<AppProps, AppState> {
           if (isVisible && !hasBeenInitialized) {
             this.initializedEmbeds.add(el.id);
           }
-          const shouldRender = isVisible || hasBeenInitialized;
+          const keepAlive = el.customData?.embeddable?.keepAlive === true;
+          const shouldRender = isVisible || hasBeenInitialized || keepAlive;
 
           if (!shouldRender) {
             return null;
@@ -1983,8 +1990,10 @@ class App extends React.Component<AppProps, AppState> {
                   ? `translate(${x - this.state.offsetLeft}px, ${
                       y - this.state.offsetTop
                     }px) scale(${scale})`
+                  : keepAlive
+                  ? "translate(-100000px, -100000px)"
                   : "none",
-                display: isVisible ? "block" : "none",
+                display: isVisible || keepAlive ? "block" : "none",
                 opacity: getRenderOpacity(
                   el,
                   getContainingFrame(el, this.scene.getNonDeletedElementsMap()),

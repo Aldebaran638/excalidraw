@@ -59,7 +59,7 @@ const json = async (path, init) => {
   );
   const send = await page.evaluateHandle(() =>
     [...document.querySelectorAll(".note-chat button")].find(
-      (node) => node.textContent.trim() === "发送 ↑",
+      (node) => node.getAttribute("aria-label") === "发送消息",
     ),
   );
   assert.ok(send.asElement());

@@ -7,11 +7,23 @@ import {
 } from "react";
 import { Button } from "@excalidraw/excalidraw/components/Button";
 import { Dialog } from "@excalidraw/excalidraw/components/Dialog";
+import {
+  checkIcon,
+  copyIcon,
+  pencilIcon,
+  RetryIcon,
+  brainIcon,
+  BringForwardIcon,
+  collapseDownIcon,
+  playerStopFilledIcon,
+  CloseIcon,
+} from "@excalidraw/excalidraw/components/icons";
 
 import { NoteChatMarkdown } from "./NoteChatMarkdown";
 import { ChatWidgetCard } from "./ChatWidgetCard";
 import { ChatWidgetBuildCard } from "./ChatWidgetBuildCard";
 import { ChatHtmlCard } from "./ChatHtmlCard";
+import { ChatIconButton } from "./ChatIconButton";
 import "./NoteChatPanel.scss";
 
 import type { NoteChatController } from "../data/noteChats";
@@ -41,13 +53,43 @@ export const NoteChatPanel = ({
   const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
   const [title, setTitle] = useState("");
   const [copied, setCopied] = useState("");
+  const copyMessage = async (id: string, content: string) => {
+    try {
+      const clipboard =
+        scroller.current?.ownerDocument.defaultView?.navigator.clipboard;
+      if (!clipboard) {
+        throw new Error("Clipboard unavailable");
+      }
+      await clipboard.writeText(content);
+      setCopied(id);
+    } catch {
+      setCopied(`failed:${id}`);
+    }
+  };
   const [choosingWidget, setChoosingWidget] = useState(false);
+  const [editing, setEditing] = useState<{
+    id: string;
+    content: string;
+  } | null>(null);
+  const [historyId, setHistoryId] = useState("");
+  const visibleMessages = historyId
+    ? session?.previousVersions?.find((version) => version.id === historyId)
+        ?.messages || []
+    : session?.messages || [];
+  useEffect(() => {
+    if (
+      editing &&
+      !session?.messages.some((message) => message.id === editing.id)
+    ) {
+      setEditing(null);
+    }
+  }, [session?.messages, editing]);
   const error =
     (noteId && selected && state.errors[`${noteId}/${selected}`]) ||
     state.errors[noteId || "unbound"];
   const draft = selected ? ui?.drafts[selected] || "" : "";
   const workspace = selected ? ui?.workspaces?.[selected] : undefined;
-  const canvasWidgets = controller.widgetHost?.elements() || [];
+  const canvasWidgets = controller.htmlHost?.elements() || [];
   const latestVersions = new Map<string, number>();
   for (const message of session?.messages || []) {
     for (const ref of message.artifacts || []) {
@@ -88,6 +130,8 @@ export const NoteChatPanel = ({
       node.scrollHeight - node.scrollTop - node.clientHeight < 60;
     setBelow(!follow.current);
     setMenu(false);
+    setEditing(null);
+    setHistoryId("");
     // Restore only on session change, not for every streaming state update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noteId, selected]);
@@ -238,204 +282,341 @@ export const NoteChatPanel = ({
             )}
           </div>
         )}
-        {session?.messages.map((message) => (
+        {!!session?.previousVersions?.length && (
+          <label className="note-chat-history">
+            <span>对话版本</span>
+            <select
+              aria-label="对话版本"
+              value={historyId}
+              onChange={(event) => {
+                setHistoryId(event.target.value);
+                setEditing(null);
+              }}
+            >
+              <option value="">当前版本</option>
+              {session.previousVersions.map((version, index) => (
+                <option key={version.id} value={version.id}>
+                  历史版本 {index + 1} ·{" "}
+                  {new Date(version.createdAt).toLocaleString()}
+                </option>
+              ))}
+            </select>
+            {historyId && (
+              <p>
+                正在查看历史版本；原消息和应用均已保留。返回当前版本后可继续对话。
+              </p>
+            )}
+          </label>
+        )}
+        {visibleMessages.map((message, messageIndex) => (
           <article
             key={message.id}
-            className={`note-chat-message note-chat-message--${message.role}`}
+            className={`note-chat-message note-chat-message--${message.role}${
+              editing?.id === message.id ? " note-chat-message--editing" : ""
+            }`}
           >
-            <div className="note-chat-author">
-              {message.role === "user" ? "你" : "AI"}
-              <span>
-                {message.role === "assistant" &&
-                  (message.artifacts?.length &&
-                  message.status !== "generating" &&
-                  message.status !== "complete"
-                    ? "组件已保存"
-                    : {
-                        generating: "回答中",
-                        stopped: "已停止",
-                        interrupted: "已中断",
-                        failed: "未完成",
-                        complete: "",
-                      }[message.status])}
-              </span>
-            </div>
-            {message.blocks?.length === 0 &&
-              message.status === "generating" && (
-                <p className="note-chat-muted">
-                  {message.thinking ? "等待模型思考…" : "等待模型输出…"}
-                </p>
-              )}
-            {message.blocks?.map((block) => {
-              if (block.type === "text") {
-                return <NoteChatMarkdown key={block.id} content={block.text} />;
-              }
-              if (block.type === "reasoning") {
-                return (
-                  <details key={block.id} className="note-chat-reasoning">
-                    <summary>思考过程</summary>
-                    <div>{block.text}</div>
-                  </details>
-                );
-              }
-              if (block.type === "tool") {
-                const activity = message.activities?.find(
-                  (entry) => entry.id === block.activityId,
-                );
-                return (
-                  <details key={block.id} className="note-chat-reading">
-                    <summary>
-                      {activity?.status === "reading"
-                        ? "正在调用工具…"
-                        : activity?.summary || "工具活动"}
-                    </summary>
-                    <p>{activity?.name}</p>
-                    {activity?.details && <pre>{activity.details}</pre>}
-                  </details>
-                );
-              }
-              return noteId && selected ? (
-                <ChatHtmlCard
-                  key={block.id}
-                  block={block}
-                  noteId={noteId}
-                  sessionId={selected}
-                  generating={message.status === "generating"}
-                  controller={controller}
-                />
-              ) : null;
-            })}
-            {!message.blocks && !!message.activities?.length && (
-              <details className="note-chat-reading">
-                <summary>
-                  {message.activities.some(
-                    (activity) => activity.status === "reading",
-                  )
-                    ? "正在调用工具…"
-                    : `工具活动 ${message.activities.length} 次`}{" "}
-                  · 发送时画布 ·{" "}
-                  {new Date(
-                    message.activities[0].snapshotAt,
-                  ).toLocaleTimeString()}
-                </summary>
-                <p>基于发送时的画布快照，后续编辑不会改变本次阅读内容。</p>
-                {message.activities.map((activity) => (
-                  <div key={activity.id}>
-                    <span>
-                      {activity.summary ||
-                        (
-                          {
-                            get_note_outline: "查看笔记目录",
-                            search_note: "搜索笔记内容",
-                            read_note_elements: "读取元素详情",
-                            create_widget_draft: "生成组件候选",
-                            revise_widget_draft: "修改组件候选",
-                            read_chat_widget: "读取聊天作品",
-                          } as Record<string, string>
-                        )[activity.name] ||
-                        "阅读笔记"}
-                    </span>
-                    {activity.details && (
-                      <details className="note-chat-tool-details">
-                        <summary>查看错误详情</summary>
-                        <pre>{activity.details}</pre>
-                      </details>
-                    )}
-                    {activity.elementIds.map((id) => (
-                      <code key={id} title={id}>
-                        {id.slice(0, 8)}
-                      </code>
-                    ))}
+            <div className="note-chat-message-content">
+              <div className="note-chat-author">
+                {message.role === "user" ? "你" : "AI"}
+                <span>
+                  {message.role === "assistant" &&
+                    (message.artifacts?.length &&
+                    message.status !== "generating" &&
+                    message.status !== "complete"
+                      ? "组件已保存"
+                      : {
+                          generating: "回答中",
+                          stopped: "已停止",
+                          interrupted: "已中断",
+                          failed: "未完成",
+                          complete: "",
+                        }[message.status])}
+                </span>
+              </div>
+              {editing?.id === message.id && (
+                <div>
+                  <textarea
+                    className="note-chat-edit"
+                    aria-label="编辑历史消息"
+                    wrap="soft"
+                    maxLength={12000}
+                    value={editing.content}
+                    onChange={(event) =>
+                      setEditing({
+                        id: message.id,
+                        content: event.target.value,
+                      })
+                    }
+                  />
+                  <p className="note-chat-muted">
+                    发送后从这里重新回答，原对话保留在历史版本中。
+                  </p>
+                  <div className="note-chat-message-actions">
+                    <ChatIconButton
+                      label="取消编辑"
+                      icon={CloseIcon}
+                      onClick={() => setEditing(null)}
+                    />
+                    <ChatIconButton
+                      label="发送修改"
+                      icon={checkIcon}
+                      disabled={
+                        !editing.content.trim() || generating || running
+                      }
+                      onClick={() => {
+                        if (noteId && selected) {
+                          void controller.send(noteId, selected, undefined, {
+                            messageId: message.id,
+                            content: editing.content,
+                          });
+                        }
+                      }}
+                    />
                   </div>
-                ))}
-              </details>
-            )}
-            {!message.blocks &&
-              message.role === "assistant" &&
-              message.reasoning && (
-                <details className="note-chat-reasoning">
+                </div>
+              )}
+              {message.blocks?.length === 0 &&
+                message.status === "generating" && (
+                  <p className="note-chat-muted">
+                    {message.thinking ? "等待模型思考…" : "等待模型输出…"}
+                  </p>
+                )}
+              {message.blocks?.map((block) => {
+                if (block.type === "text") {
+                  return (
+                    <NoteChatMarkdown
+                      key={block.id}
+                      content={block.text.replace(
+                        /\[HTML作品引用 ([\w-]+) v(\d+)\]/g,
+                        (reference, id, version) =>
+                          message.blocks?.some(
+                            (entry) =>
+                              entry.type === "html" &&
+                              entry.ref.artifactId === id &&
+                              entry.ref.version === Number(version),
+                          )
+                            ? reference
+                            : `【此引用没有对应的应用卡片；模型尚未实际生成该作品：${id} v${version}】`,
+                      )}
+                    />
+                  );
+                }
+                if (block.type === "reasoning") {
+                  return (
+                    <details key={block.id} className="note-chat-reasoning">
+                      <summary>思考过程</summary>
+                      <div>{block.text}</div>
+                    </details>
+                  );
+                }
+                if (block.type === "tool") {
+                  const activity = message.activities?.find(
+                    (entry) => entry.id === block.activityId,
+                  );
+                  return (
+                    <details key={block.id} className="note-chat-reading">
+                      <summary>
+                        {activity?.status === "reading"
+                          ? "正在调用工具…"
+                          : activity?.summary || "工具活动"}
+                      </summary>
+                      <p>{activity?.name}</p>
+                      {activity?.details && <pre>{activity.details}</pre>}
+                    </details>
+                  );
+                }
+                return noteId && selected ? (
+                  <ChatHtmlCard
+                    key={block.id}
+                    block={block}
+                    noteId={noteId}
+                    sessionId={selected}
+                    generating={message.status === "generating"}
+                    controller={controller}
+                  />
+                ) : null;
+              })}
+              {!message.blocks && !!message.activities?.length && (
+                <details className="note-chat-reading">
                   <summary>
-                    {message.status === "generating" && !message.content
-                      ? "正在思考…"
-                      : "思考过程"}
+                    {message.activities.some(
+                      (activity) => activity.status === "reading",
+                    )
+                      ? "正在调用工具…"
+                      : `工具活动 ${message.activities.length} 次`}{" "}
+                    · 发送时画布 ·{" "}
+                    {new Date(
+                      message.activities[0].snapshotAt,
+                    ).toLocaleTimeString()}
                   </summary>
-                  <div>{message.reasoning}</div>
+                  <p>基于发送时的画布快照，后续编辑不会改变本次阅读内容。</p>
+                  {message.activities.map((activity) => (
+                    <div key={activity.id}>
+                      <span>
+                        {activity.summary ||
+                          (
+                            {
+                              get_note_outline: "查看笔记目录",
+                              search_note: "搜索笔记内容",
+                              read_note_elements: "读取元素详情",
+                              create_widget_draft: "生成组件候选",
+                              revise_widget_draft: "修改组件候选",
+                              read_chat_widget: "读取聊天作品",
+                            } as Record<string, string>
+                          )[activity.name] ||
+                          "阅读笔记"}
+                      </span>
+                      {activity.details && (
+                        <details className="note-chat-tool-details">
+                          <summary>查看错误详情</summary>
+                          <pre>{activity.details}</pre>
+                        </details>
+                      )}
+                      {activity.elementIds.map((id) => (
+                        <code key={id} title={id}>
+                          {id.slice(0, 8)}
+                        </code>
+                      ))}
+                    </div>
+                  ))}
                 </details>
               )}
-            {!message.blocks && (
-              <NoteChatMarkdown
-                content={
-                  message.content ||
-                  (message.status === "generating" && !message.reasoning
-                    ? message.thinking
-                      ? "等待模型思考…"
-                      : "正在生成回答…"
-                    : "")
-                }
-              />
-            )}
-            {Object.entries(state.widgetBuilds)
-              .filter(
-                ([, build]) =>
-                  build.noteId === noteId &&
-                  build.sessionId === selected &&
-                  build.turnId === message.turnId &&
-                  message.role === "assistant",
-              )
-              .map(([key, build]) => (
-                <ChatWidgetBuildCard key={key} build={build} />
-              ))}
-            {noteId &&
-              selected &&
-              message.artifacts?.map((ref) => (
-                <ChatWidgetCard
-                  key={`${ref.artifactId}:${ref.version}`}
-                  controller={controller}
-                  noteId={noteId}
-                  sessionId={selected}
-                  reference={ref}
-                  latest={latestVersions.get(ref.artifactId) === ref.version}
-                />
-              ))}
-            {message.role === "assistant" && message.content && (
-              <Button
-                onSelect={async () => {
-                  const ownerWindow =
-                    scroller.current?.ownerDocument.defaultView;
-                  try {
-                    if (!ownerWindow?.navigator.clipboard) {
-                      throw new Error();
-                    }
-                    await ownerWindow.navigator.clipboard.writeText(
-                      message.content,
-                    );
-                    setCopied(message.id);
-                  } catch {
-                    setCopied(`failed:${message.id}`);
+              {!message.blocks &&
+                message.role === "assistant" &&
+                message.reasoning && (
+                  <details className="note-chat-reasoning">
+                    <summary>
+                      {message.status === "generating" && !message.content
+                        ? "正在思考…"
+                        : "思考过程"}
+                    </summary>
+                    <div>{message.reasoning}</div>
+                  </details>
+                )}
+              {!message.blocks && (
+                <NoteChatMarkdown
+                  content={
+                    message.content ||
+                    (message.status === "generating" && !message.reasoning
+                      ? message.thinking
+                        ? "等待模型思考…"
+                        : "正在生成回答…"
+                      : "")
                   }
-                }}
-              >
-                {copied === message.id
-                  ? "已复制"
-                  : copied === `failed:${message.id}`
-                  ? "请选中文字复制"
-                  : "复制回答"}
-              </Button>
-            )}
-            {message.error && (
-              <p className="note-chat-inline-error">
-                {message.artifacts?.length
-                  ? `组件已保存，文字回复未完成：${message.error}`
-                  : message.error}
-              </p>
+                />
+              )}
+              {Object.entries(state.widgetBuilds)
+                .filter(
+                  ([, build]) =>
+                    build.noteId === noteId &&
+                    build.sessionId === selected &&
+                    build.turnId === message.turnId &&
+                    message.role === "assistant",
+                )
+                .map(([key, build]) => (
+                  <ChatWidgetBuildCard key={key} build={build} />
+                ))}
+              {noteId &&
+                selected &&
+                message.artifacts?.map((ref) => (
+                  <ChatWidgetCard
+                    key={`${ref.artifactId}:${ref.version}`}
+                    controller={controller}
+                    noteId={noteId}
+                    sessionId={selected}
+                    reference={ref}
+                    latest={latestVersions.get(ref.artifactId) === ref.version}
+                  />
+                ))}
+              {message.error && (
+                <p className="note-chat-inline-error">
+                  {message.artifacts?.length
+                    ? `组件已保存，文字回复未完成：${message.error}`
+                    : message.error}
+                </p>
+              )}
+            </div>
+            {message.role === "user" ? (
+              <div className="note-chat-user-actions" aria-label="消息操作">
+                <Button
+                  className="note-chat-message-icon"
+                  aria-label={copied === message.id ? "已复制消息" : "复制消息"}
+                  title={
+                    copied === message.id
+                      ? "已复制"
+                      : copied === `failed:${message.id}`
+                      ? "复制失败，请选中文字复制"
+                      : "复制消息"
+                  }
+                  onSelect={() => void copyMessage(message.id, message.content)}
+                >
+                  {copied === message.id ? checkIcon : copyIcon}
+                </Button>
+                {!historyId && noteId && selected && (
+                  <Button
+                    className="note-chat-message-icon"
+                    aria-label="编辑消息"
+                    title="编辑消息"
+                    disabled={
+                      generating || running || editing?.id === message.id
+                    }
+                    onSelect={() =>
+                      setEditing({ id: message.id, content: message.content })
+                    }
+                  >
+                    {pencilIcon}
+                  </Button>
+                )}
+                {copied === `failed:${message.id}` && (
+                  <span className="note-chat-copy-error" role="status">
+                    复制失败，请选中文字复制
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div className="note-chat-message-actions">
+                {!!message.content && (
+                  <ChatIconButton
+                    label={copied === message.id ? "已复制回答" : "复制回答"}
+                    icon={copied === message.id ? checkIcon : copyIcon}
+                    onClick={() =>
+                      void copyMessage(message.id, message.content)
+                    }
+                  />
+                )}
+                {!historyId && noteId && selected && (
+                  <ChatIconButton
+                    label="重新生成"
+                    icon={RetryIcon}
+                    disabled={generating || running}
+                    onClick={() => {
+                      const question = visibleMessages
+                        .slice(0, messageIndex)
+                        .reverse()
+                        .find((item) => item.role === "user");
+                      if (question) {
+                        void controller.send(noteId, selected, undefined, {
+                          messageId: question.id,
+                          content: question.content,
+                        });
+                      }
+                    }}
+                  />
+                )}
+                {copied === `failed:${message.id}` && (
+                  <span role="status">复制失败，请选中文字复制</span>
+                )}
+              </div>
             )}
           </article>
         ))}
       </div>
       {below && (
-        <Button
+        <ChatIconButton
+          label="回到最新"
+          icon={collapseDownIcon}
           className="note-chat-latest"
-          onSelect={() => {
+          onClick={() => {
             const node = scroller.current;
             if (node) {
               follow.current = true;
@@ -443,9 +624,7 @@ export const NoteChatPanel = ({
               setBelow(false);
             }
           }}
-        >
-          回到最新 ↓
-        </Button>
+        />
       )}
       {(error || state.storageError) && (
         <div className="note-chat-error" role="status">
@@ -469,7 +648,7 @@ export const NoteChatPanel = ({
           {state.widgetPhases[`${noteId}/${selected}`]}
         </p>
       )}
-      {session && noteId && selected && (
+      {session && noteId && selected && !historyId && (
         <form
           className="note-chat-composer"
           onSubmit={(event) => {
@@ -481,6 +660,7 @@ export const NoteChatPanel = ({
           {workspace && (
             <div className="note-chat-workspace">
               <span>
+                修改 ·{" "}
                 {workspace.kind === "element"
                   ? `画布组件 · ${
                       canvasWidgets.find(
@@ -503,6 +683,18 @@ export const NoteChatPanel = ({
               >
                 ×
               </button>
+            </div>
+          )}
+          {selected && ui?.recoveries?.[selected] && (
+            <div className="note-chat-workspace">
+              <span>继续修正已选择的失败草稿（发送后开始）</span>
+              <ChatIconButton
+                label="取消草稿修正"
+                icon={CloseIcon}
+                onClick={() =>
+                  controller.setWorkspace(noteId, selected, workspace)
+                }
+              />
             </div>
           )}
           {canvasWidgets.length > 0 && (!workspace || choosingWidget) && (
@@ -531,6 +723,7 @@ export const NoteChatPanel = ({
             </details>
           )}
           <textarea
+            wrap="soft"
             aria-label="聊天消息"
             placeholder="讨论笔记，或描述想创建、修改的组件…"
             rows={3}
@@ -554,32 +747,32 @@ export const NoteChatPanel = ({
             }}
           />
           <div className="note-chat-compose-actions">
-            <button
-              type="button"
-              className="note-chat-thinking"
+            <ChatIconButton
+              label={ui?.thinking ? "深度思考：已开启" : "深度思考：已关闭"}
+              icon={brainIcon}
+              active={ui?.thinking === true}
               aria-pressed={ui?.thinking === true}
-              title="开启后，Qwen 会先思考再回答，等待时间可能更长。切换对下一条消息生效。"
               onClick={() =>
                 controller.setThinking(noteId, ui?.thinking !== true)
               }
-            >
-              思考{ui?.thinking ? "已开启" : "已关闭"}
-            </button>
+            />
             {running || generating ? (
-              <Button onSelect={() => void controller.stop(noteId, selected)}>
-                停止回答
-              </Button>
+              <ChatIconButton
+                label="停止回答"
+                icon={playerStopFilledIcon}
+                primary
+                onClick={() => void controller.stop(noteId, selected)}
+              />
             ) : (
-              <Button
-                className="note-chat-send"
+              <ChatIconButton
+                label="发送消息"
+                icon={BringForwardIcon}
+                primary
                 type="submit"
-                onSelect={() => {}}
                 disabled={
                   !draft.trim() || controller.isUnsaved(noteId, selected)
                 }
-              >
-                发送 ↑
-              </Button>
+              />
             )}
           </div>
           {lastAnswer &&
@@ -587,15 +780,17 @@ export const NoteChatPanel = ({
             lastAnswer.status !== "generating" &&
             lastUser &&
             !running && (
-              <Button
-                onSelect={() =>
+              <ChatIconButton
+                label={
+                  lastAnswer.artifacts?.length
+                    ? "重试文字回复"
+                    : "重试最后一个问题"
+                }
+                icon={RetryIcon}
+                onClick={() =>
                   void controller.send(noteId, selected, lastUser.id)
                 }
-              >
-                {lastAnswer.artifacts?.length
-                  ? "重试文字回复"
-                  : "重试最后一个问题"}
-              </Button>
+              />
             )}
           <p className="note-chat-context-hint">
             Shift+Enter 换行 · 按需阅读画布 · 最近 20 轮及上下文预算内记录

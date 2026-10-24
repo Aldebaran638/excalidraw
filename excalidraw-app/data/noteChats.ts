@@ -11,6 +11,9 @@ import {
 } from "./clientProtocol";
 import { applyAppUpdate } from "./appUpdate";
 
+import type { HtmlArtifact, HtmlState, HtmlRef } from "./chatHtml";
+import type { HtmlChatHost } from "../hooks/useCanvasHtmlApps";
+
 import type {
   ChatWorkspace,
   ChatWidgetData,
@@ -49,6 +52,10 @@ type UI = {
   unread?: Record<string, boolean>;
   thinking?: boolean;
   workspaces?: Record<string, ChatWorkspace | undefined>;
+  recoveries?: Record<
+    string,
+    { artifactId: string; version: number } | undefined
+  >;
 };
 type State = {
   context: Context;
@@ -93,6 +100,56 @@ export class NoteChatController {
   private unsaved = new Set<string>();
   private deleted = new Set<string>();
   public widgetHost?: ChatWidgetHost;
+  public htmlHost?: HtmlChatHost;
+  private htmlTrials = new Map<string, HtmlState>();
+  setHtmlTrial(
+    noteId: string,
+    sessionId: string,
+    ref: HtmlRef,
+    state: HtmlState,
+  ) {
+    this.htmlTrials.set(
+      `${noteId}/${sessionId}/${ref.artifactId}/${ref.version}`,
+      structuredClone(state),
+    );
+  }
+  async placeHtml(data: HtmlArtifact, state: HtmlState) {
+    if (
+      !this.htmlHost ||
+      this.state.context.noteId !== data.noteId ||
+      this.state.ui[data.noteId]?.selected !== data.sessionId
+    ) {
+      throw new Error("请返回作品所属笔记和会话再导入");
+    }
+    await this.ensureIdentity();
+    const session = this.state.context.documentSession;
+    const valid = () =>
+      this.state.context.noteId === data.noteId &&
+      this.state.context.documentSession === session;
+    await this.htmlHost.place(data, state, valid, (elementId) => {
+      if (valid()) {
+        this.setWorkspace(data.noteId, data.sessionId, {
+          kind: "element",
+          elementId,
+        });
+      }
+    });
+  }
+  async applyHtml(data: HtmlArtifact, state: HtmlState, trial: boolean) {
+    if (
+      !this.htmlHost ||
+      this.state.context.noteId !== data.noteId ||
+      this.state.ui[data.noteId]?.selected !== data.sessionId
+    ) {
+      throw new Error("请返回作品所属笔记和会话再应用");
+    }
+    await this.ensureIdentity();
+    await this.htmlHost.apply(data, state, trial);
+    this.setWorkspace(data.noteId, data.sessionId, {
+      kind: "element",
+      elementId: data.target!.elementId,
+    });
+  }
   private widgetRuntimes = new Map<string, WidgetRuntimeState>();
   private trialTimers = new Map<string, number>();
   private trialSaves = new Map<string, Promise<void>>();
@@ -260,6 +317,27 @@ export class NoteChatController {
     this.saveUI(noteId, {
       ...ui,
       workspaces: { ...ui.workspaces, [sessionId]: workspace },
+      recoveries: { ...ui.recoveries, [sessionId]: undefined },
+    });
+  }
+  recoverHtml(noteId: string, sessionId: string, data: HtmlArtifact) {
+    if (!data.recovery) {
+      return;
+    }
+    const ui = this.state.ui[noteId] || blankUI();
+    this.saveUI(noteId, {
+      ...ui,
+      workspaces: { ...ui.workspaces, [sessionId]: data.recovery.base },
+      recoveries: {
+        ...ui.recoveries,
+        [sessionId]: { artifactId: data.artifactId, version: data.version },
+      },
+      drafts: {
+        ...ui.drafts,
+        [sessionId]: ui.drafts[sessionId]?.trim()
+          ? ui.drafts[sessionId]
+          : "请读取我选择的失败草稿，修正错误并保存候选；不要重新生成整个应用。",
+      },
     });
   }
   runtimeForArtifact(key: string, data: ChatWidgetData) {
@@ -492,6 +570,7 @@ export class NoteChatController {
   private sceneKey = "";
   sceneChanged() {
     const key = JSON.stringify([
+      this.htmlHost?.elements(),
       this.widgetHost?.elements(),
       ...Object.values(this.state.artifacts)
         .filter((data) => data.noteId === this.state.context.noteId)
@@ -510,7 +589,7 @@ export class NoteChatController {
     }
   }
   async referenceElement(elementId: string) {
-    if (!this.widgetHost?.read(elementId)) {
+    if (!this.htmlHost?.read(elementId)) {
       return;
     }
     if (
@@ -521,7 +600,7 @@ export class NoteChatController {
     }
     const noteId = this.state.context.noteId;
     const id = noteId ? this.state.ui[noteId]?.selected : null;
-    if (noteId && id && this.widgetHost?.read(elementId)) {
+    if (noteId && id && this.htmlHost?.read(elementId)) {
       this.setWorkspace(noteId, id, { kind: "element", elementId });
     }
   }
@@ -558,7 +637,7 @@ export class NoteChatController {
       }),
     };
     this.state.sessions = { ...this.state.sessions, [key]: session };
-    const { messages, ...summary } = session;
+    const { messages, previousVersions, ...summary } = session;
     const list = this.state.lists[session.noteId] || [];
     this.state.lists = {
       ...this.state.lists,
@@ -768,7 +847,12 @@ export class NoteChatController {
       this.error(`${noteId}/${id}`, error);
     }
   }
-  async send(noteId: string, id: string, retryMessageId?: string) {
+  async send(
+    noteId: string,
+    id: string,
+    retryMessageId?: string,
+    replacement?: { messageId: string; content: string },
+  ) {
     const key = `${noteId}/${id}`;
     if (this.unsaved.has(key)) {
       this.error(
@@ -781,9 +865,12 @@ export class NoteChatController {
     const retry = session?.messages.find(
       (message) => message.id === retryMessageId && message.role === "user",
     );
-    const content = retry?.content || this.state.ui[noteId]?.drafts[id]?.trim();
+    const content =
+      replacement?.content ??
+      retry?.content ??
+      this.state.ui[noteId]?.drafts[id]?.trim();
     if (
-      !content ||
+      !content?.trim() ||
       !session ||
       this.active.has(key) ||
       this.state.context.noteId !== noteId
@@ -814,14 +901,21 @@ export class NoteChatController {
             turnId,
             content,
             retryMessageId,
+            replaceMessageId: replacement?.messageId,
             thinking: this.state.ui[noteId]?.thinking === true,
             snapshot,
             workspace,
+            appIntent: workspace ? "edit" : "create",
+            recovery: this.state.ui[noteId]?.recoveries?.[id],
             workspaceState: artifact
               ? this.runtimeForArtifact(
                   this.artifactKey(noteId, id, artifact),
                   artifact,
                 ).state
+              : workspace?.kind === "html"
+              ? this.htmlTrials.get(
+                  `${noteId}/${id}/${workspace.artifactId}/${workspace.version}`,
+                )
               : undefined,
             revision: session.revision,
             noteName: this.state.context.name,
@@ -965,7 +1059,7 @@ export class NoteChatController {
           }
           this.emit(true);
         }
-        if (event.type === "start" && !retry) {
+        if (event.type === "start" && !retry && !replacement) {
           this.setDraft(noteId, id, "");
         }
         const current = this.state.sessions[key];
@@ -1064,7 +1158,11 @@ export class NoteChatController {
           this.error(
             key,
             new Error(
-              event.saved && event.message?.artifacts?.length
+              event.saved &&
+              (event.message?.artifacts?.length ||
+                event.message?.blocks?.some(
+                  (block) => block.type === "html" && block.saved,
+                ))
                 ? `组件已保存，文字回复未完成：${event.error || "回答中断"}`
                 : event.error || "回答中断",
             ),

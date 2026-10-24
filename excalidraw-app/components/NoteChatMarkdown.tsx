@@ -1,5 +1,8 @@
 import { useMemo, useState } from "react";
 import { marked } from "marked";
+import { copyIcon, checkIcon } from "@excalidraw/excalidraw/components/icons";
+
+import { ChatIconButton } from "./ChatIconButton";
 
 import type { Token, Tokens } from "marked";
 import type { ReactNode } from "react";
@@ -8,8 +11,9 @@ const Code = ({ text }: { text: string }) => {
   const [status, setStatus] = useState("复制代码");
   return (
     <div className="note-chat-code">
-      <button
-        type="button"
+      <ChatIconButton
+        label={status}
+        icon={status === "已复制" ? checkIcon : copyIcon}
         onClick={async (event) => {
           const ownerWindow = event.currentTarget.ownerDocument.defaultView;
           try {
@@ -22,9 +26,7 @@ const Code = ({ text }: { text: string }) => {
             setStatus("请选中代码复制");
           }
         }}
-      >
-        {status}
-      </button>
+      />
       <pre>
         <code>{text}</code>
       </pre>

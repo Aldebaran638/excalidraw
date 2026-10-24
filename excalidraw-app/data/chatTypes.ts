@@ -11,7 +11,8 @@ export type ChatStatus =
 export type ChatActivity = {
   id: string;
   name: string;
-  status: "reading" | "complete";
+  status: "reading" | "complete" | "failed";
+  errorCode?: string;
   elementIds: string[];
   snapshotAt: number;
   summary?: string;
@@ -41,8 +42,13 @@ export type ChatSession = {
   updatedAt: number;
   revision: number;
   messages: ChatMessage[];
+  previousVersions?: {
+    id: string;
+    createdAt: number;
+    messages: ChatMessage[];
+  }[];
 };
-export type ChatSummary = Omit<ChatSession, "messages"> & {
+export type ChatSummary = Omit<ChatSession, "messages" | "previousVersions"> & {
   generating: boolean;
 };
 export type NoteSnapshot = {

@@ -195,7 +195,7 @@ describe("HTML chat artifacts", () => {
       requests++;
       const body = JSON.parse(String(init?.body));
       expect(body.stream).toBe(true);
-      expect(body.max_tokens).toBe(8192);
+      expect(body.max_tokens).toBe(32768);
       const parts = [
         { reasoning_content: "先分析" },
         { content: "说明\n```html\n" },

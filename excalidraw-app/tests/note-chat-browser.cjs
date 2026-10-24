@@ -22,10 +22,18 @@ const click = async (page, selector) => {
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 };
 const button = async (page, text, root = ".note-chat") => {
+  text =
+    {
+      "发送 ↑": "发送消息",
+      思考已关闭: "深度思考：已关闭",
+      思考已开启: "深度思考：已开启",
+    }[text] || text;
   const element = await page.evaluateHandle(
     (text, root) =>
       [...document.querySelector(root).querySelectorAll("button")].find(
-        (node) => node.textContent.trim() === text,
+        (node) =>
+          node.textContent.trim() === text ||
+          node.getAttribute("aria-label") === text,
       ),
     text,
     root,

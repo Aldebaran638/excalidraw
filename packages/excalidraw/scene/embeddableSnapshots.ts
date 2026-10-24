@@ -11,6 +11,37 @@ const localSnapshots = new Map<
   string,
   { baseline: string; width: number; height: number; svg: string }
 >();
+const captureProviders = new Map<string, () => Promise<string>>();
+/** Host registration; snapshot acquisition stays independent of embedded content. */
+export const registerEmbeddableCapture = (
+  id: string,
+  capture: (() => Promise<string>) | null,
+) => {
+  if (capture) {
+    captureProviders.set(id, capture);
+  } else {
+    captureProviders.delete(id);
+  }
+};
+export const captureEmbeddableSnapshots = async (
+  elements: readonly NonDeletedExcalidrawElement[],
+) => {
+  for (const element of elements) {
+    if (
+      element.type !== "embeddable" ||
+      !element.customData?.embeddable?.snapshotRequired
+    ) {
+      continue;
+    }
+    const capture = captureProviders.get(element.id);
+    if (!capture) {
+      throw new Error(
+        "应用尚未启动，不能导出当前画面；请等待或排除此元素后重试。",
+      );
+    }
+    cacheEmbeddableSnapshot(element, await capture());
+  }
+};
 export const cacheEmbeddableSnapshot = (
   element: NonDeletedExcalidrawElement,
   svg: string,

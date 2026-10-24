@@ -24,6 +24,8 @@ import {
 } from "../data/repositoryNotes";
 
 import { readMetadata } from "../data/noteIdentity";
+import { forkHtmlApps } from "../data/htmlApps";
+import { readCanvasHtmlApp } from "../data/chatHtml";
 
 import type { RepositoryMetadata } from "../data/noteIdentity";
 
@@ -348,6 +350,13 @@ export const useRepositoryNoteSync = ({
             }
           }
           const serialized = JSON.parse(snapshot.serializedContent);
+          const independentCopy = Boolean(
+            explicitName && targetName !== nameRef.current,
+          );
+          if (independentCopy) {
+            metadata ||= { version: 1, noteId: randomId() };
+            serialized.elements = forkHtmlApps(snapshot.elements);
+          }
           delete serialized.repositoryMetadata;
           if (metadata) {
             serialized.repositoryMetadata = metadata;
@@ -373,6 +382,26 @@ export const useRepositoryNoteSync = ({
           }
           revisionRef.current = result.revision;
           metadataRef.current = metadata;
+          if (independentCopy && excalidrawAPI) {
+            const identities = new Map<string, string>(
+              serialized.elements.flatMap(
+                (element: OrderedExcalidrawElement) => {
+                  const app = readCanvasHtmlApp(element.customData?.htmlApp);
+                  return app ? [[element.id, app.appId] as const] : [];
+                },
+              ),
+            );
+            // Save As may take time: rebase identities onto the live scene, never
+            // restore the older snapshot over edits made while the request ran.
+            excalidrawAPI.updateScene({
+              elements: forkHtmlApps(
+                excalidrawAPI.getSceneElementsIncludingDeleted(),
+                new Set(),
+                identities,
+              ),
+              captureUpdate: CaptureUpdateAction.NEVER,
+            });
+          }
           setRepositoryNoteId(metadata?.noteId || null);
           lastPersistedContentRef.current = serializedContent;
           if (queuedContentRef.current === snapshot.serializedContent) {
@@ -610,6 +639,14 @@ export const useRepositoryNoteSync = ({
       }
       if (fork || !metadataRef.current) {
         metadataRef.current = { version: 1, noteId: randomId() };
+        if (fork && excalidrawAPI) {
+          excalidrawAPI.updateScene({
+            elements: forkHtmlApps(
+              excalidrawAPI.getSceneElementsIncludingDeleted(),
+            ),
+            captureUpdate: CaptureUpdateAction.NEVER,
+          });
+        }
       }
       const expectedId = metadataRef.current.noteId;
       const name = await saveCurrent();
@@ -618,7 +655,7 @@ export const useRepositoryNoteSync = ({
       }
       return { noteId: expectedId, name };
     },
-    [saveCurrent, repositoryNoteId],
+    [saveCurrent, repositoryNoteId, excalidrawAPI],
   );
 
   useEffect(() => () => debouncedSave.cancel(), [debouncedSave]);
@@ -643,6 +680,14 @@ export const useRepositoryNoteSync = ({
         setRepositoryNoteName(null);
         setDocumentSession((value) => value + 1);
         setStatus("unbound");
+        const imported = excalidrawAPI.getSceneElementsIncludingDeleted();
+        const independent = forkHtmlApps(imported);
+        if (independent.some((element, index) => element !== imported[index])) {
+          excalidrawAPI.updateScene({
+            elements: independent,
+            captureUpdate: CaptureUpdateAction.NEVER,
+          });
+        }
       }),
     [excalidrawAPI, debouncedSave, setRepositoryNoteName, markRecovery],
   );

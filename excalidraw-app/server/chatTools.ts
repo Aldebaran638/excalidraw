@@ -1,3 +1,5 @@
+import { readCanvasHtmlApp } from "../data/chatHtml";
+
 import { ChatError } from "./chatStore";
 
 import type { NoteSnapshot } from "../data/chatTypes";
@@ -66,6 +68,38 @@ export const CHAT_WIDGET_TOOLS = [
     },
   ),
 ];
+export const APP_SOURCE_TOOLS = [
+  functionTool(
+    "read_app_source",
+    "Read the explicitly selected application's source.html, with line numbers and sourceHash. Use startLine/lineCount for paging; follow nextLine/nextColumn for long lines (columns are zero-based UTF-16 offsets). Read before editing; no paths or other targets accepted.",
+    {
+      startLine: { type: "integer", minimum: 1 },
+      lineCount: { type: "integer", minimum: 1, maximum: 200 },
+      startColumn: { type: "integer", minimum: 0 },
+    },
+  ),
+  functionTool(
+    "edit_app_source",
+    "Apply exact, uniquely matching replacements atomically to the sourceHash you just read. Creates a saved preview candidate only, NEVER applies to the canvas. Preserve unrelated code. Re-read after an edit before another edit.",
+    {
+      sourceHash: { type: "string" },
+      edits: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        items: {
+          type: "object",
+          properties: {
+            oldText: { type: "string" },
+            newText: { type: "string" },
+          },
+          required: ["oldText", "newText"],
+          additionalProperties: false,
+        },
+      },
+    },
+  ),
+];
 export const sanitizeSnapshot = (value: unknown): NoteSnapshot => {
   const data = value as NoteSnapshot;
   if (
@@ -111,6 +145,12 @@ export const sanitizeSnapshot = (value: unknown): NoteSnapshot => {
     if (widget && typeof widget === "object") {
       output.aiWidget = widget;
     }
+    const html = readCanvasHtmlApp(
+      (element.customData as Record<string, unknown> | undefined)?.htmlApp,
+    );
+    if (html) {
+      output.htmlApp = html;
+    }
     return output;
   });
   return { capturedAt: data.capturedAt, elements };
@@ -120,7 +160,10 @@ export const elementTitle = (element: Record<string, unknown>) => {
     | { definition?: { title?: string } }
     | undefined;
   return String(
-    widget?.definition?.title || element.text || element.type,
+    readCanvasHtmlApp(element.htmlApp)?.title ||
+      widget?.definition?.title ||
+      element.text ||
+      element.type,
   ).slice(0, 80);
 };
 const findNode = (node: unknown, id: string): unknown => {

@@ -79,8 +79,6 @@ import type {
 import type { ResolutionType } from "@excalidraw/common/utility-types";
 import type { ResolvablePromise } from "@excalidraw/common/utils";
 
-import { WIDGET_LINK_PREFIX } from "../packages/interactive-widgets/types";
-
 import { useSidebarWidth } from "./useSidebarWidth";
 
 import CustomStats from "./CustomStats";
@@ -156,8 +154,8 @@ import { NoteChatController } from "./data/noteChats";
 import { RepositoryNotesDialog } from "./components/RepositoryNotesDialog";
 import { RepositorySyncStatus } from "./components/RepositorySyncStatus";
 import { useRepositoryNoteSync } from "./hooks/useRepositoryNoteSync";
-import { useAIWidgets, isWidgetElement } from "./hooks/useAIWidgets";
-import { AIWidgetPanel } from "./components/AIWidgetPanel";
+import { useCanvasHtmlApps, HTML_APP_LINK } from "./hooks/useCanvasHtmlApps";
+import { HtmlCanvasControls } from "./components/HtmlCanvasControls";
 
 import type { CollabAPI } from "./collab/Collab";
 
@@ -493,11 +491,15 @@ const ExcalidrawWrapper = () => {
     ownerWindow,
     hasTransientEdits: () => transientEdits.current(),
   });
-  const widgets = useAIWidgets({
+  const chatActions = useRef({ create: () => {}, edit: (_id: string) => {} });
+  const widgets = useCanvasHtmlApps({
     api: excalidrawAPI,
     ownerWindow,
-    noteName: repositoryNoteName,
+    noteId: repositoryNoteId,
     documentSession,
+    flush: saveCurrentRepositoryNote,
+    onCreate: () => chatActions.current.create(),
+    onEdit: (id) => chatActions.current.edit(id),
   });
   transientEdits.current = widgets.hasTransientEdits;
   const chatBindings = useRef({
@@ -522,8 +524,26 @@ const ExcalidrawWrapper = () => {
   if (chats) {
     chats.ensureIdentity = ensureNoteIdentity;
     chats.capture = widgets.captureChatSnapshot;
-    chats.widgetHost = widgets.chatHost;
+    chats.htmlHost = widgets.htmlHost;
   }
+  chatActions.current = {
+    create: () => {
+      excalidrawAPI?.toggleSidebar({
+        name: "default",
+        tab: "note-chat",
+        force: true,
+      });
+      void chats?.create();
+    },
+    edit: (id) => {
+      excalidrawAPI?.toggleSidebar({
+        name: "default",
+        tab: "note-chat",
+        force: true,
+      });
+      void chats?.referenceElement(id);
+    },
+  };
   useEffect(() => {
     chats?.bind({
       noteId: repositoryNoteId,
@@ -1112,11 +1132,12 @@ const ExcalidrawWrapper = () => {
         onChange={onChange}
         customTools={[{ name: "ai-widget", label: "AI 组件" }]}
         renderEmbeddable={widgets.renderEmbeddable}
+        onDuplicate={widgets.onDuplicate}
         validateEmbeddable={(link) =>
-          link.startsWith(WIDGET_LINK_PREFIX) &&
+          link.startsWith(HTML_APP_LINK) &&
           excalidrawAPI
             ?.getSceneElements()
-            .some((el) => el.link === link && isWidgetElement(el))
+            .some((el) => el.link === link && Boolean(el.customData?.htmlApp))
             ? true
             : undefined
         }
@@ -1334,16 +1355,8 @@ const ExcalidrawWrapper = () => {
           width={sidebarSize.width}
           onResize={sidebarSize.resize}
         />
-        <AIWidgetPanel
+        <HtmlCanvasControls
           widgets={widgets}
-          onChatEdit={(elementId) => {
-            excalidrawAPI?.toggleSidebar({
-              name: "default",
-              tab: "note-chat",
-              force: true,
-            });
-            void chats?.referenceElement(elementId);
-          }}
           conflict={externalUpdate?.name || null}
           recoveryConflict={externalUpdate?.recovery}
           resolveConflict={resolveExternalUpdate}

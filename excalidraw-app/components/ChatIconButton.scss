@@ -1,0 +1,92 @@
+.excalidraw .chat-icon-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
+  padding: 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-on-surface-variant);
+  cursor: pointer;
+  > span {
+    display: inline-flex;
+  }
+  svg {
+    width: 16px;
+    height: 16px;
+  }
+  &:hover:not(:disabled),
+  &:focus-visible {
+    background: var(--color-surface-high);
+    color: var(--color-on-surface);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+  &.is-active {
+    color: var(--color-primary);
+    background: var(--color-surface-high);
+    border-color: var(--color-primary);
+  }
+  &.is-primary {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--color-primary);
+    color: var(--color-surface-lowest);
+    &:hover:not(:disabled) {
+      background: var(--color-primary);
+      color: var(--color-surface-lowest);
+      filter: brightness(0.94);
+    }
+  }
+  &:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  &::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    z-index: 20;
+    padding: 5px 8px;
+    border-radius: 6px;
+    background: #25252a;
+    color: #fff;
+    font: 12px/1.5 system-ui, sans-serif;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+  }
+  &:hover:not(:disabled)::after,
+  &:focus-visible::after {
+    opacity: 1;
+  }
+}
+.excalidraw .html-app-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+}
+.excalidraw .note-chat-compose-actions > .chat-icon-button:first-child::after,
+.excalidraw .note-chat-message-actions > .chat-icon-button:first-child::after {
+  left: 0;
+  right: auto;
+}
+@media (pointer: coarse) {
+  .excalidraw .chat-icon-button,
+  .excalidraw .chat-icon-button.is-primary {
+    width: 44px;
+    height: 44px;
+  }
+}
