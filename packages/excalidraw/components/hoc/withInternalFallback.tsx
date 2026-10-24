@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useRef } from "react";
+import React, { useLayoutEffect } from "react";
 
 import { useTunnels } from "../../context/tunnels";
 import { atom } from "../../editor-jotai";
@@ -18,52 +18,20 @@ export const withInternalFallback = <P,>(
       tunnelsJotai: { useAtom },
     } = useTunnels();
     // for rerenders
-    const [, setCounter] = useAtom(renderAtom);
-    // for initial & subsequent renders. Tracked as component state
-    // due to excalidraw multi-instance scanerios.
-    const metaRef = useRef({
-      // flag set on initial render to tell the fallback component to skip the
-      // render until mount counter are initialized. This is because the counter
-      // is initialized in an effect, and thus we could end rendering both
-      // components at the same time until counter is initialized.
-      preferHost: false,
-      counter: 0,
-    });
+    // This atom is scoped to the editor's tunnel store. A per-instance ref
+    // retained the count from THAT instance's mount; when fallback mounted
+    // first it kept 1 forever, covering the host with a second empty sidebar.
+    const [counter, setCounter] = useAtom(renderAtom);
 
     useLayoutEffect(() => {
-      const meta = metaRef.current;
-      setCounter((c) => {
-        const next = c + 1;
-        meta.counter = next;
-
-        return next;
-      });
+      setCounter((c) => c + 1);
       return () => {
-        setCounter((c) => {
-          const next = c - 1;
-          meta.counter = next;
-          if (!next) {
-            meta.preferHost = false;
-          }
-          return next;
-        });
+        setCounter((c) => c - 1);
       };
     }, [setCounter]);
 
-    if (!props.__fallback) {
-      metaRef.current.preferHost = true;
-    }
-
-    // ensure we don't render fallback and host components at the same time
-    if (
-      // either before the counters are initialized
-      (!metaRef.current.counter &&
-        props.__fallback &&
-        metaRef.current.preferHost) ||
-      // or after the counters are initialized, and both are rendered
-      // (this is the default when host renders as well)
-      (metaRef.current.counter > 1 && props.__fallback)
-    ) {
+    // Layout effects settle the shared count before the next paint.
+    if (counter > 1 && props.__fallback) {
       return null;
     }
 

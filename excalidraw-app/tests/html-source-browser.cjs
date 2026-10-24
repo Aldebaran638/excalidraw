@@ -497,8 +497,9 @@ const source =
     await page
       .waitForFunction(
         () =>
+          Boolean(document.querySelector(".canvas-html-app iframe")) &&
           document.querySelector(".canvas-html-app iframe") !==
-          window.__oldAppFrame,
+            window.__oldAppFrame,
         { polling: 100, timeout: 60000 },
       )
       .catch(async (error) => {
