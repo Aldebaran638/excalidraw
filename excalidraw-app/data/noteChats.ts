@@ -629,6 +629,8 @@ export class NoteChatController {
                 );
                 return block.type === "html" &&
                   prior?.type === "html" &&
+                  prior.ref.artifactId === block.ref.artifactId &&
+                  prior.ref.version === block.ref.version &&
                   block.source === undefined
                   ? { ...block, source: prior.source }
                   : block;
@@ -1089,7 +1091,10 @@ export class NoteChatController {
                       const old = message.blocks?.find(
                         (entry) => entry.id === block.id,
                       );
-                      return block.type === "html" && old?.type === "html"
+                      return block.type === "html" &&
+                        old?.type === "html" &&
+                        old.ref.artifactId === block.ref.artifactId &&
+                        old.ref.version === block.ref.version
                         ? { ...block, source: old.source }
                         : block;
                     }),
@@ -1108,8 +1113,11 @@ export class NoteChatController {
                   block = {
                     ...block,
                     source:
-                      (old?.type === "html" ? old.source || "" : "") +
-                      (event.blockDelta || ""),
+                      (old?.type === "html" &&
+                      old.ref.artifactId === block.ref.artifactId &&
+                      old.ref.version === block.ref.version
+                        ? old.source || ""
+                        : "") + (event.blockDelta || ""),
                   };
                 } else if (
                   (block.type === "text" || block.type === "reasoning") &&

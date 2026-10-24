@@ -3,7 +3,9 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+
 import { expect, it } from "vitest";
+
 import { ChatStore } from "../server/chatStore";
 import { createChatService } from "../server/chat";
 import { CHAT_HEADERS } from "../data/clientProtocol";
@@ -72,6 +74,12 @@ it("rejects an old client before model invocation and projects saved artifacts w
       body: "{}",
     });
     expect(response.status).toBe(426);
+    const v2 = await fetch(`${url}/turns`, {
+      method: "POST",
+      headers: { "X-Chat-Protocol": "2", "X-Chat-Capabilities": "html-blocks" },
+      body: "{}",
+    });
+    expect(v2.status).toBe(426);
     expect(calls).toBe(0);
     expect(await store.read(noteId, session.id)).toEqual(before);
   } finally {

@@ -1,4 +1,5 @@
-export const CHAT_PROTOCOL_VERSION = 2;
+// v3 clears streamed source when the same card switches to a repaired version.
+export const CHAT_PROTOCOL_VERSION = 3;
 export const HTML_RUNTIME_VERSION = 2;
 export const CHAT_HEADERS = {
   "X-Chat-Protocol": String(CHAT_PROTOCOL_VERSION),

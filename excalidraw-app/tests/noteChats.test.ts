@@ -32,11 +32,106 @@ const browser = (fetch: typeof globalThis.fetch) => {
 };
 const json = (data: unknown) => new Response(JSON.stringify(data));
 describe("application-owned chat controller", () => {
+  it.each([true, false])(
+    "clears streamed source on repair (live update=%s)",
+    async (liveUpdate) => {
+      const fetch = vi.fn(async (url, init) => {
+        if (String(url).endsWith("/turns")) {
+          const { turnId } = JSON.parse(String(init?.body));
+          const block = {
+            id: "same-card",
+            type: "html" as const,
+            ref: {
+              kind: "html" as const,
+              artifactId: "app-current-123456",
+              version: 1,
+            },
+            complete: false,
+          };
+          const message = {
+            id: "repair-answer-123456",
+            turnId,
+            role: "assistant" as const,
+            content: "",
+            createdAt: 1,
+            status: "generating" as const,
+            blocks: [],
+          };
+          const next = {
+            ...block,
+            ref: { ...block.ref, version: 2 },
+            complete: true,
+            saved: true,
+          };
+          const frames = [
+            {
+              type: "start",
+              session: { ...session, messages: [message] },
+              message,
+            },
+            {
+              type: "block",
+              sequence: 1,
+              block,
+              blockDelta: "<script>const x={3RC:1};</script>",
+            },
+            ...(liveUpdate
+              ? [{ type: "block", sequence: 2, block: next }]
+              : []),
+            {
+              type: "done",
+              saved: true,
+              session: {
+                ...session,
+                messages: [{ ...message, status: "complete", blocks: [next] }],
+              },
+              message: { ...message, status: "complete", blocks: [next] },
+            },
+          ];
+          return new Response(
+            frames
+              .map(
+                (frame) =>
+                  `data: ${JSON.stringify({
+                    ...frame,
+                    noteId,
+                    sessionId: session.id,
+                    turnId,
+                  })}\n\n`,
+              )
+              .join(""),
+            { headers: { "Content-Type": "text/event-stream" } },
+          );
+        }
+        return String(url).endsWith(`/chats/${session.id}`)
+          ? json(session)
+          : json({ sessions: [session] });
+      }) as typeof globalThis.fetch;
+      const controller = new NoteChatController(
+        browser(fetch),
+        async () => ({ noteId, name: "a.excalidraw" }),
+        () => ({ capturedAt: 1, elements: [] }),
+      );
+      controller.bind({ noteId, name: "a.excalidraw", documentSession: 1 });
+      await controller.select(noteId, session.id);
+      controller.setDraft(noteId, session.id, "创建应用");
+      await controller.send(noteId, session.id);
+      const blocks = controller
+        .getState()
+        .sessions[`${noteId}/${session.id}`].messages.at(-1)!.blocks!;
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].type === "html" && blocks[0].ref.version).toBe(2);
+      expect(
+        (blocks[0].type === "html" && blocks[0].source) || "",
+      ).not.toContain("3RC");
+      controller.dispose();
+    },
+  );
   it("detects a mismatched entry without reloading or losing the input draft", async () => {
     const fetch = vi.fn(async () =>
       json({
         buildId: "index-new.js",
-        chatProtocolVersion: 2,
+        chatProtocolVersion: 3,
         htmlRuntimeVersion: 2,
       }),
     ) as typeof globalThis.fetch;
@@ -61,7 +156,7 @@ describe("application-owned chat controller", () => {
     );
     expect(ownerWindow.location.reload).not.toHaveBeenCalled();
     expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({
-      "X-Chat-Protocol": "2",
+      "X-Chat-Protocol": "3",
       "X-Chat-Capabilities": "html-blocks",
     });
     controller.dispose();

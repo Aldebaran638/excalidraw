@@ -8,8 +8,57 @@ import { ChatError } from "./chatStore";
 export const sourceHash = (source: string) =>
   createHash("sha256").update(source).digest("hex");
 
+export type SourceDiagnostic = {
+  scriptIndex?: number;
+  attribute?: string;
+  line: number;
+  column: number;
+  excerpt: string;
+};
+export class AppSyntaxError extends ChatError {
+  readonly code = "javascript_syntax";
+  constructor(message: string, readonly diagnostic: SourceDiagnostic) {
+    super(422, message);
+  }
+}
+
+/** One exact diff against the original baseline, including all repair edits. */
+export const sourceDifference = (before: string, after: string) => {
+  let start = 0;
+  while (
+    start < Math.min(before.length, after.length) &&
+    before[start] === after[start]
+  ) {
+    start++;
+  }
+  if (start === before.length && start === after.length) {
+    return [];
+  }
+  // Use whole lines so the diff remains readable and never splits a surrogate pair.
+  start = start > 0 ? before.lastIndexOf("\n", start - 1) + 1 : 0;
+  let end = 0;
+  while (
+    end < Math.min(before.length, after.length) - start &&
+    before[before.length - end - 1] === after[after.length - end - 1]
+  ) {
+    end++;
+  }
+  const suffix = before.slice(before.length - end);
+  const newline = suffix.indexOf("\n");
+  end = newline < 0 ? 0 : end - newline - 1;
+  return [
+    {
+      before: before.slice(start, before.length - end),
+      after: after.slice(start, after.length - end),
+    },
+  ];
+};
+
 /** Stable categories for UI and metadata-only diagnostics. */
 export const sourceErrorCode = (error: unknown) => {
+  if (error instanceof AppSyntaxError) {
+    return "syntax";
+  }
   const message = (error as Error).message || "";
   if (/语法|script 标签|HTML 未完整/.test(message)) {
     return "syntax";
@@ -121,11 +170,22 @@ export const validateAppSource = (source: string) => {
             allowReturnOutsideFunction: true,
           });
         } catch (error) {
-          throw new ChatError(
-            422,
+          const position =
+            node.sourceCodeLocation?.attrs?.[attribute.name] ||
+            node.sourceCodeLocation;
+          const diagnostic = {
+            attribute: attribute.name,
+            line: position?.startLine || 1,
+            column: position?.startCol || 1,
+            excerpt: attribute.value.slice(0, 500),
+          };
+          throw new AppSyntaxError(
             `事件处理器 ${attribute.name} 语法错误：${
               (error as Error).message
-            }`,
+            }；HTML 属性起始位置：第 ${diagnostic.line} 行第 ${
+              diagnostic.column
+            } 列\n${diagnostic.excerpt}`,
+            diagnostic,
           );
         }
       }
@@ -168,14 +228,22 @@ export const validateAppSource = (source: string) => {
             ? script
                 .split("\n")
                 .slice(Math.max(0, location.line - 2), location.line + 1)
-                .map((line: string) => line.slice(0, 500))
+                .map((text: string, index: number) => {
+                  const isErrorLine =
+                    Math.max(0, location.line - 2) + index ===
+                    location.line - 1;
+                  const start = isErrorLine
+                    ? Math.max(0, location.column - 200)
+                    : 0;
+                  return `${start ? "…" : ""}${text.slice(start, start + 500)}`;
+                })
                 .join("\n")
             : "";
-          throw new ChatError(
-            422,
+          throw new AppSyntaxError(
             `JavaScript 语法错误：脚本 ${scriptIndex}，HTML 第 ${line} 行第 ${column} 列；${
               (error as Error).message
             }\n${excerpt}`,
+            { scriptIndex, line, column, excerpt },
           );
         }
       }

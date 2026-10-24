@@ -9,7 +9,7 @@ const puppeteer = require("puppeteer-core");
 
 const base = "http://127.0.0.1:3009";
 const headers = {
-  "X-Chat-Protocol": "2",
+  "X-Chat-Protocol": "3",
   "X-Chat-Capabilities": "html-blocks",
 };
 const json = async (url, init) => {

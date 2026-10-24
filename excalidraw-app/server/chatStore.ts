@@ -238,6 +238,17 @@ export class ChatStore {
             session.messages.forEach((message) => {
               if (message.status === "generating") {
                 message.status = "interrupted";
+                for (const block of message.blocks || []) {
+                  if (
+                    block.type === "html" &&
+                    block.repair &&
+                    ["pending", "repairing"].includes(block.repair.status)
+                  ) {
+                    block.repair.status = "interrupted";
+                    block.error =
+                      "服务重启，自动修复已中断；草稿已保留，可手动继续修正";
+                  }
+                }
               }
             }),
           );

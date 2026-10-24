@@ -4,7 +4,9 @@ The application lives in the app layer, not the canvas element system. Ordinary 
 
 ## Compatibility diagnostics
 
-`GET /api/client-info` reports the published entry asset, chat protocol and HTML runtime versions. Compare it with the loaded entry in a card's **版本信息**. Protocol-aware requests send `X-Chat-Protocol: 2` and `X-Chat-Capabilities: html-blocks`. Production and Vite reject incapable clients before a model request. Legacy reads receive an explanatory text projection; the stored conversation is unchanged. Worker activation is user initiated.
+`GET /api/client-info` reports the published entry asset, chat protocol and HTML runtime versions. Protocol-aware requests send `X-Chat-Protocol: 3` and `X-Chat-Capabilities: html-blocks`. Version 3 correctly replaces streamed source when a repaired version updates the same card. Production and Vite reject incapable clients before a model request. Legacy reads receive an explanatory text projection; the stored conversation is unchanged. Worker activation is user initiated.
+
+Complete JavaScript syntax failures in the current turn can trigger up to two local source-edit repairs. Repair shares the turn deadline and reading/tool budgets; truncated output, connection errors, runtime exceptions and full rewrites in edit mode do not trigger it. Saved candidates remain unapplied until user confirmation. The gated `AUTO_REPAIR_REAL_QWEN=1` Vitest case injects the initial invalid HTML deterministically, then forwards actual read/edit repair calls to Qwen; it does not assert that the initial generation was produced by Qwen.
 
 Replaying the user's copied todo/calculator/pomodoro records with the pre-HTML entry `index-Bc6mpJFH.js` reproduced zero cards, while the HTML-aware entry showed three. This establishes a reproducible compatibility failure, not proof of the cache version in the user's unconnected original browser tab. Use the displayed loaded/published entries to diagnose that tab. Never regenerate over evidence.
 

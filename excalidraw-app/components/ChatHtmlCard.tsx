@@ -43,7 +43,9 @@ export const ChatHtmlCard = ({
   const state = useRef<HtmlState>(
     block.initialState || { forms: {}, custom: {} },
   );
-  const revision = useRef(0);
+  const revisions = useRef(new Map<string, number>());
+  const edited = useRef(false);
+  const persistLatest = useRef<(next: HtmlState) => void>(() => {});
   const saving = useRef(Promise.resolve());
   const timer = useRef<number | undefined>(undefined);
   const endpoint = `/api/notes/${noteId}/chats/${sessionId}/html-artifacts/${block.ref.artifactId}?version=${block.ref.version}`;
@@ -98,11 +100,18 @@ export const ChatHtmlCard = ({
           return;
         }
         setData(value);
-        revision.current = value.revision;
-        if (!generating) {
+        revisions.current.set(endpoint, value.revision);
+        if (!generating && !edited.current) {
           state.current = value.state;
         }
         setSaved(value.complete === true);
+        if (
+          edited.current &&
+          block.repair?.status === "succeeded" &&
+          JSON.stringify(state.current) !== JSON.stringify(value.state)
+        ) {
+          persistLatest.current(state.current);
+        }
       })
       .catch((e) => {
         if (!cancelled) {
@@ -112,8 +121,9 @@ export const ChatHtmlCard = ({
     return () => {
       cancelled = true;
     };
-  }, [endpoint, block.saved, generating, run]);
+  }, [endpoint, block.saved, block.repair?.status, generating, run]);
   const persist = (next: HtmlState) => {
+    edited.current = true;
     state.current = next;
     controller.setHtmlTrial(noteId, sessionId, block.ref, next);
     setSaved(false);
@@ -125,20 +135,30 @@ export const ChatHtmlCard = ({
           const response = await win.fetch(endpoint, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ revision: revision.current, state: next }),
+            body: JSON.stringify({
+              revision: revisions.current.get(endpoint) || 0,
+              state: next,
+            }),
           });
           const value = await response.json();
           if (!response.ok) {
             throw new Error(value.error || "输入未保存");
           }
-          revision.current = value.revision;
+          revisions.current.set(endpoint, value.revision);
           setSaved(true);
         })
         .catch((e) => setError(`输入尚未保存：${e.message}`));
     }, 500);
   };
-  const failure = block.error || data?.recovery?.error;
-  const complete = Boolean(!failure && (block.complete || data?.complete));
+  persistLatest.current = persist;
+  const resolved =
+    data?.artifactId === block.ref.artifactId &&
+    data.version === block.ref.version
+      ? data
+      : undefined;
+  const failure = block.error || resolved?.recovery?.error;
+  const repair = block.repair || resolved?.repair;
+  const complete = Boolean(!failure && (block.complete || resolved?.complete));
   const targetNow = data?.target
     ? controller.htmlHost?.read(data.target.elementId)
     : null;
@@ -168,7 +188,12 @@ export const ChatHtmlCard = ({
             ? "修改候选"
             : "新作品"}{" "}
           · v{block.ref.version} ·{" "}
-          {failure
+          {generating &&
+          (repair?.status === "pending" || repair?.status === "repairing")
+            ? `正在修正语法错误 · 第 ${Math.min(repair.attempts + 1, 2)}/2 次`
+            : repair?.status === "succeeded"
+            ? "语法已修复，源码已保存"
+            : failure
             ? block.draftSaved || data?.recovery
               ? "草稿已保存"
               : "草稿待保存"
@@ -202,7 +227,7 @@ export const ChatHtmlCard = ({
           source={
             original
               ? baseline?.source || ""
-              : block.source || data?.source || ""
+              : block.source || resolved?.source || ""
           }
           complete={original ? Boolean(baseline?.complete) : complete}
           initialState={
@@ -213,7 +238,9 @@ export const ChatHtmlCard = ({
           active={Boolean(
             original
               ? baseline?.complete
-              : !failure && (generating || running || data?.complete),
+              : !failure &&
+                  Boolean(block.source || resolved?.source) &&
+                  (generating || running || resolved?.complete),
           )}
           onState={original ? undefined : persist}
           onDraft={original ? undefined : persist}
@@ -247,7 +274,7 @@ export const ChatHtmlCard = ({
                   }
                 />
               )}
-              {complete && (
+              {complete && resolved && (
                 <>
                   <ChatIconButton
                     label="继续修改"
@@ -264,11 +291,11 @@ export const ChatHtmlCard = ({
                   <ChatIconButton
                     label="导入笔记"
                     icon={stackPushIcon}
-                    disabled={!data || working}
+                    disabled={!resolved || working}
                     onClick={() =>
                       action(() =>
                         controller.placeHtml(
-                          data!,
+                          resolved!,
                           runtime.current?.state() || state.current,
                         ),
                       )
@@ -292,7 +319,7 @@ export const ChatHtmlCard = ({
           <pre>{failure}</pre>
         </details>
       )}
-      {data?.target && complete && (
+      {resolved?.target && complete && (
         <div className="html-app-candidate">
           <p>修改候选 · 正式实例在确认前不会改变</p>
           <label>
@@ -310,7 +337,7 @@ export const ChatHtmlCard = ({
             onClick={() =>
               action(() =>
                 controller.applyHtml(
-                  data,
+                  resolved,
                   runtime.current?.state() || state.current,
                   trial,
                 ),
@@ -332,7 +359,7 @@ export const ChatHtmlCard = ({
       )}
       {code && (
         <pre className="note-chat-html-source">
-          <code>{block.source || data?.source}</code>
+          <code>{block.source || resolved?.source}</code>
         </pre>
       )}
     </section>

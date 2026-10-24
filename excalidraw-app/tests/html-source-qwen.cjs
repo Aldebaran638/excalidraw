@@ -8,7 +8,7 @@ const base = "http://127.0.0.1:3009";
 const directory = path.resolve(__dirname, "../../.local-data/preview/notes");
 const headers = {
   "Content-Type": "application/json",
-  "X-Chat-Protocol": "2",
+  "X-Chat-Protocol": "3",
   "X-Chat-Capabilities": "html-blocks",
 };
 const json = async (url, init) => {

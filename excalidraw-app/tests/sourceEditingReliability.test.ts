@@ -355,7 +355,7 @@ describe("source editing reliability", () => {
     expect(draft.complete).toBe(false);
     expect(draft.recovery?.code).toBe("syntax");
     expect(block.saved).not.toBe(true);
-    expect(f.requests).toHaveLength(1);
+    expect(f.requests).toHaveLength(2);
   });
 
   it("does not announce a candidate when publishing it fails", async () => {

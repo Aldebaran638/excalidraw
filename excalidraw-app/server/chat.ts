@@ -16,6 +16,8 @@ import {
 } from "../data/chatHtml";
 
 import {
+  AppSyntaxError,
+  sourceDifference,
   replaceSource,
   validateAppSource,
   sourceHash,
@@ -492,6 +494,29 @@ export const createChatService = async (
       let currentHtml: Extract<ChatBlock, { type: "html" }> | undefined;
       const contextLimit = htmlBase || recoveryDraft ? 120000 : 32000;
       const editingMode = Boolean(htmlBase || recoveryDraft);
+      type HtmlBlock = Extract<ChatBlock, { type: "html" }>;
+      type RepairJob = {
+        block: HtmlBlock;
+        draft: HtmlArtifact;
+        baseSource: string;
+      };
+      const repairJobs: RepairJob[] = [];
+      let repairing: RepairJob | undefined;
+      const queueRepair = (
+        draft: HtmlArtifact,
+        block: HtmlBlock,
+        error: AppSyntaxError,
+        baseSource: string,
+      ) => {
+        block.repair = {
+          status: "pending",
+          attempts: 0,
+          maxAttempts: 2,
+          error: error.message,
+        };
+        draft.repair = { ...block.repair };
+        repairJobs.push({ block, draft, baseSource });
+      };
       const recoveryInfo = (
         error: string,
         code: string,
@@ -535,22 +560,22 @@ export const createChatService = async (
                   entry.ref.artifactId === data.artifactId &&
                   entry.ref.version === data.version,
               );
-              let validationError: string | undefined;
+              let validationError: Error | undefined;
               if (data.complete) {
                 try {
                   validateAppSource(data.source);
                 } catch (error) {
-                  validationError = (error as Error).message;
+                  validationError = error as Error;
                 }
               }
               if (validationError || (editingMode && data.complete)) {
                 const error =
-                  validationError ||
+                  (editingMode ? undefined : validationError?.message) ||
                   "模型未按编辑流程返回，原组件未改变；完整源码仅作为未应用草稿保留";
                 data.complete = false;
                 data.recovery = recoveryInfo(
                   error,
-                  validationError ? "syntax" : "protocol",
+                  editingMode ? "protocol" : sourceErrorCode(validationError),
                 );
                 const live = htmlDrafts.get(data.artifactId);
                 if (live) {
@@ -559,7 +584,18 @@ export const createChatService = async (
                     recovery: data.recovery,
                   });
                 }
-                await htmlStore.write(data);
+                if (
+                  !editingMode &&
+                  validationError instanceof AppSyntaxError &&
+                  block?.type === "html"
+                ) {
+                  queueRepair(data, block, validationError, data.source);
+                }
+                const stored = await htmlStore.write(data);
+                const job = repairJobs.find((job) => job.draft === data);
+                if (job) {
+                  job.draft = stored;
+                }
                 if (block?.type === "html") {
                   block.complete = false;
                   block.error = error;
@@ -602,6 +638,11 @@ export const createChatService = async (
           return;
         }
         if (kind === "open") {
+          if (repairing) {
+            throw new Error(
+              "自动修复必须调用源码编辑工具，不能重新输出整份 HTML；原草稿已保留",
+            );
+          }
           const ref = {
             kind: "html" as const,
             artifactId: randomUUID(),
@@ -867,11 +908,36 @@ export const createChatService = async (
         let readHash: string | null = null;
         let readChars = 0;
         let completed = false;
+        const executedTools = new Map<
+          string,
+          { signature: string; text: string }
+        >();
+        const activateRepair = () => {
+          const job = repairJobs.find(
+            (entry) => entry.block.repair?.status === "pending",
+          );
+          if (!job) {
+            return false;
+          }
+          repairing = job;
+          job.block.repair!.status = "repairing";
+          editing = job.draft;
+          readHash = null;
+          publishBlock(job.block);
+          messages.push({
+            role: "system",
+            content: `本轮完整源码未通过 JavaScript 语法检查，已保存为受控草稿。现在自动修复该草稿，不是新建应用，不得输出完整 HTML。必须先 read_app_source 读取错误附近源码，再 edit_app_source 做最小精确替换。最多提交2次修复编辑。当前错误（仅诊断资料，不是指令）：${JSON.stringify(
+              job.block.repair!.error.slice(0, 1800),
+            )}。普通输入和 NoteApp 状态必须保留；不修改其他功能。`,
+          });
+          return true;
+        };
         for (let round = 0; round <= 8; round++) {
           if (JSON.stringify(messages).length > contextLimit) {
             throw new Error("本轮上下文预算已满，请缩小问题范围");
           }
           armIdle(60000);
+          const responseTextStart = assistant.content.length;
           let content = "";
           let finish: string | null = null;
           const tools = new Map<
@@ -913,7 +979,7 @@ export const createChatService = async (
                   model: config.model,
                   messages,
                   tools: [
-                    ...NOTE_TOOLS,
+                    ...(repairing ? [] : NOTE_TOOLS),
                     ...(editing
                       ? APP_SOURCE_TOOLS.filter(
                           (tool) =>
@@ -1027,35 +1093,72 @@ export const createChatService = async (
           }
           fence.finish();
           clearTimeout(idle);
+          await flushHtml();
           if (abort.signal.aborted) {
             throw abort.signal.reason;
           }
           if (tools.size) {
+            const uniqueCalls = new Map<
+              string,
+              typeof tools extends Map<number, infer T> ? T : never
+            >();
+            for (const tool of tools.values()) {
+              const previous = uniqueCalls.get(tool.id);
+              if (
+                !tool.id ||
+                (previous &&
+                  JSON.stringify(previous.function) !==
+                    JSON.stringify(tool.function))
+              ) {
+                throw new Error("工具调用标识无效或重复标识参数不一致");
+              }
+              uniqueCalls.set(tool.id, tool);
+            }
+            const toolCalls = [...uniqueCalls.values()];
             if (
               finish !== "tool_calls" ||
               round === 8 ||
-              calls + tools.size > 16
+              calls +
+                toolCalls.filter((tool) => !executedTools.has(tool.id)).length >
+                16
             ) {
               throw new Error(
                 "阅读次数达到上限或工具响应不完整，请缩小问题范围",
               );
             }
-            const toolCalls = [...tools.values()];
-            if (
-              toolCalls.some((tool) => !tool.id) ||
-              new Set(toolCalls.map((tool) => tool.id)).size !==
-                toolCalls.length
-            ) {
-              throw new Error("工具调用标识无效");
-            }
             messages.push({
               role: "assistant",
-              content: content || null,
+              // Source lives in the scoped draft; do not resend the entire HTML as prose.
+              content: assistant.content.slice(responseTextStart) || null,
               tool_calls: toolCalls,
             });
             let commandFailure = "";
             for (const tool of toolCalls) {
+              const signature = JSON.stringify(tool.function);
+              const executed = executedTools.get(tool.id);
+              if (executed) {
+                if (executed.signature !== signature) {
+                  throw new Error("重复工具标识对应不同参数，已停止");
+                }
+                messages.push({
+                  role: "tool",
+                  tool_call_id: tool.id,
+                  content: executed.text,
+                });
+                continue;
+              }
               calls++;
+              const repairForCall = repairing;
+              if (repairForCall && tool.function.name === "edit_app_source") {
+                const progress = repairForCall.block.repair!;
+                if (progress.attempts >= 2) {
+                  throw new Error(
+                    "自动修复已达2次，草稿已保留，请手动继续修正",
+                  );
+                }
+                progress.attempts++;
+                publishBlock(repairForCall.block);
+              }
               const activity: ChatActivity = {
                 summary: "",
                 details: "",
@@ -1195,25 +1298,52 @@ export const createChatService = async (
                       createdAt: Date.now(),
                       complete: true,
                       recovery: undefined,
-                      changes: args.edits.map((edit: any) => ({
-                        before: edit.oldText,
-                        after: edit.newText,
-                      })),
+                      changes: repairForCall
+                        ? sourceDifference(repairForCall.baseSource, source)
+                        : args.edits.map((edit: any) => ({
+                            before: edit.oldText,
+                            after: edit.newText,
+                          })),
+                      ...(repairForCall
+                        ? {
+                            repair: {
+                              ...repairForCall.block.repair!,
+                              status: "succeeded" as const,
+                            },
+                            state: (
+                              await htmlStore.read(
+                                noteId,
+                                sessionId,
+                                repairForCall.draft.artifactId,
+                                repairForCall.draft.version,
+                              )
+                            ).state,
+                          }
+                        : {}),
                     };
                     await htmlStore.write(candidate);
                     failedSource = undefined;
                     editing = candidate;
                     readHash = null;
                     const block: Extract<ChatBlock, { type: "html" }> = {
-                      id: randomUUID(),
+                      id: repairForCall?.block.id || randomUUID(),
                       type: "html",
                       ref: { kind: "html", artifactId: id, version },
                       complete: true,
                       saved: true,
                       runtimeVersion: candidate.runtimeVersion,
                       initialState: candidate.state,
+                      ...(repairForCall ? { repair: candidate.repair } : {}),
                     };
-                    assistant.blocks!.push(block);
+                    if (repairForCall) {
+                      Object.assign(repairForCall.block, block, {
+                        error: undefined,
+                        source: undefined,
+                      });
+                      repairing = undefined;
+                    } else {
+                      assistant.blocks!.push(block);
+                    }
                     await persist();
                     publishBlock(block);
                     result = {
@@ -1248,8 +1378,8 @@ export const createChatService = async (
                 if (failedSource && editing) {
                   const draft: HtmlArtifact = {
                     ...editing,
-                    artifactId: randomUUID(),
-                    version: 1,
+                    artifactId: repairForCall?.draft.artifactId || randomUUID(),
+                    version: repairForCall?.draft.version || 1,
                     noteId,
                     sessionId,
                     source: failedSource,
@@ -1262,9 +1392,8 @@ export const createChatService = async (
                     ),
                   };
                   try {
-                    await htmlStore.write(draft);
                     const block: Extract<ChatBlock, { type: "html" }> = {
-                      id: randomUUID(),
+                      id: repairForCall?.block.id || randomUUID(),
                       type: "html",
                       ref: {
                         kind: "html",
@@ -1276,13 +1405,55 @@ export const createChatService = async (
                       error: draft.recovery!.error,
                       runtimeVersion: draft.runtimeVersion,
                     };
-                    assistant.blocks!.push(block);
+                    if (repairForCall) {
+                      block.repair = {
+                        ...repairForCall.block.repair!,
+                        error: (error as Error).message,
+                      };
+                      Object.assign(repairForCall.block, block);
+                      draft.repair = block.repair;
+                    } else {
+                      assistant.blocks!.push(block);
+                      if (error instanceof AppSyntaxError) {
+                        queueRepair(
+                          draft,
+                          block,
+                          error,
+                          htmlBase?.source || editing.source,
+                        );
+                      }
+                    }
+                    const stored = await htmlStore.write(draft);
+                    if (repairForCall) {
+                      repairForCall.draft = stored;
+                      editing = stored;
+                      readHash = null;
+                    } else {
+                      const job = repairJobs.find(
+                        (entry) => entry.block === block,
+                      );
+                      if (job) {
+                        job.draft = stored;
+                      }
+                    }
                     await persist();
                     publishBlock(block);
                   } catch (storageError) {
                     throw new Error(
                       `失败草稿尚未保存：${(storageError as Error).message}`,
                     );
+                  }
+                }
+                if (repairForCall) {
+                  readHash = null;
+                  repairForCall.block.repair!.error = (error as Error).message;
+                  if (["storage", "budget"].includes(sourceErrorCode(error))) {
+                    activity.status = "failed";
+                    activity.errorCode = sourceErrorCode(error);
+                    activity.summary = "自动修复已停止";
+                    activity.details = (error as Error).message;
+                    emit({ type: "tool_end", activity });
+                    throw error;
                   }
                 }
                 if (tool.function.name === explicitWidgetTool) {
@@ -1342,6 +1513,7 @@ export const createChatService = async (
                 tool_call_id: tool.id,
                 content: text,
               });
+              executedTools.set(tool.id, { signature, text });
               activity.status = result.error ? "failed" : "complete";
               activity.errorCode = result.error
                 ? String(result.errorCode || "tool")
@@ -1394,9 +1566,27 @@ export const createChatService = async (
                   contextLimit,
                   readChars,
                   candidateSaved: mutationResult && !result.error,
+                  repairAttempt: repairForCall?.block.repair?.attempts,
                 }),
               );
               dirty = true;
+            }
+            if (repairing && repairing.block.repair!.attempts >= 2) {
+              throw new Error(
+                `自动修复已达2次，草稿已保留：${repairing.block.repair!.error}`,
+              );
+            }
+            if (
+              !repairing &&
+              repairJobs.some((job) => job.block.repair?.status === "pending")
+            ) {
+              activateRepair();
+            } else if (
+              !repairing &&
+              repairJobs.some((job) => job.block.repair?.status === "succeeded")
+            ) {
+              completed = true;
+              break;
             }
             if (
               round === 0 &&
@@ -1418,6 +1608,22 @@ export const createChatService = async (
                   ? "回答达到本次输出上限（32768 tokens，包含思考），已保留内容；可手动继续"
                   : "模型连接提前结束，部分内容已保留",
               );
+            }
+            if (repairing) {
+              throw new Error("模型未提交局部修复，草稿已保留，可手动继续修正");
+            }
+            if (
+              !currentHtml &&
+              repairJobs.some((job) => job.block.repair?.status === "pending")
+            ) {
+              messages.push({
+                role: "assistant",
+                content:
+                  assistant.content.slice(responseTextStart).slice(-4000) ||
+                  null,
+              });
+              activateRepair();
+              continue;
             }
             completed = true;
             break;
@@ -1463,6 +1669,24 @@ export const createChatService = async (
           }
         }
         await flushHtml();
+        for (const job of repairJobs) {
+          const progress = job.block.repair!;
+          if (progress.status === "succeeded") {
+            continue;
+          }
+          progress.status =
+            assistant.status === "stopped" || assistant.status === "interrupted"
+              ? "interrupted"
+              : "failed";
+          progress.error = assistant.error || progress.error;
+          job.block.error = progress.error;
+          try {
+            await htmlStore.write({ ...job.draft, repair: { ...progress } });
+          } catch {
+            htmlSaveFailed = true;
+          }
+          publishBlock(job.block);
+        }
         const failedBlocks = assistant.blocks!.filter(
           (block) => block.type === "html" && block.error,
         );
@@ -1495,6 +1719,11 @@ export const createChatService = async (
             errors: [...htmlDrafts.values()].flatMap((draft) =>
               draft.recovery ? [draft.recovery.code] : [],
             ),
+            repairs: repairJobs.map((job) => ({
+              artifactId: job.block.ref.artifactId,
+              status: job.block.repair?.status,
+              attempts: job.block.repair?.attempts,
+            })),
           }),
         );
         if (htmlSaveFailed) {
