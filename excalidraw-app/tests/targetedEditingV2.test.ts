@@ -165,6 +165,67 @@ async function fixture(
   };
 }
 
+describe("chat tool round limits", () => {
+  it("reports incomplete tool responses separately from round exhaustion", async () => {
+    const f = await fixture(() =>
+      stream(
+        {
+          tool_calls: [
+            {
+              index: 0,
+              id: randomUUID(),
+              function: { name: "get_note_outline", arguments: "{}" },
+            },
+          ],
+        },
+        "stop",
+      ),
+    );
+    const result = await f.send();
+    expect(result.message?.error).toContain("模型工具响应不完整");
+    expect(result.message?.activities).toHaveLength(0);
+  });
+
+  it("finishes after 100 successful rounds plus failed retries without the old 16-call cap", async () => {
+    const f = await fixture((_, index) => {
+      if (index < 10) {
+        return call("read_app_source", { startLine: 0 });
+      }
+      return index < 110
+        ? call("get_note_outline", {})
+        : stream({ content: "完成" });
+    });
+    const result = await f.send();
+    expect(result.message?.status).toBe("complete");
+    expect(
+      result.message?.activities?.filter((a) => a.status === "failed"),
+    ).toHaveLength(10);
+    expect(
+      result.message?.activities?.filter((a) => a.status === "complete"),
+    ).toHaveLength(100);
+    expect(f.requests).toHaveLength(111);
+  }, 30000);
+
+  it("rejects a 101st normal round with an accurate reason", async () => {
+    const f = await fixture(() => call("get_note_outline", {}));
+    const result = await f.send();
+    expect(result.message?.status).toBe("failed");
+    expect(result.message?.error).toContain("100 次正常工具往返");
+    expect(result.message?.activities).toHaveLength(100);
+  }, 30000);
+
+  it("bounds failures separately rather than retrying forever", async () => {
+    const f = await fixture(() => call("read_app_source", { startLine: 0 }));
+    const result = await f.send();
+    expect(result.message?.status).toBe("failed");
+    expect(result.message?.error).toContain("失败重试／恢复已达 100 次");
+    expect(result.message?.activities).toHaveLength(100);
+    expect(
+      result.message?.activities?.every((a) => a.status === "failed"),
+    ).toBe(true);
+  }, 30000);
+});
+
 describe("tool prose framing", () => {
   it("recognizes a real-shaped prose call at every split without executing it", () => {
     for (let i = 0; i <= fake.length; i++) {

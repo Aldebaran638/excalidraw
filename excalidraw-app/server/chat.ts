@@ -29,6 +29,7 @@ import {
 } from "./appSource";
 import { SourceToolError } from "./sourceErrors";
 import { diagnoseStyles } from "./styleDiagnostics";
+import { ToolLoopBudget } from "./toolLoopBudget";
 
 import { ChatStore, ChatError } from "./chatStore";
 import { ChatArtifactStore } from "./chatArtifacts";
@@ -693,6 +694,7 @@ export const createChatService = async (
         }
       };
       let protocolCorrections = 0;
+      const toolBudget = new ToolLoopBudget();
       let lastCandidate: HtmlArtifact | undefined;
       const prose = new ToolProseStream((kind, text) => {
         assistant.content += text;
@@ -1077,7 +1079,7 @@ export const createChatService = async (
             )}`,
           });
         }
-        let calls = 0;
+        let protocolRecovery = false;
         let editing = recoveryDraft || htmlBase;
         let readHash: string | null = null;
         let readChars = 0;
@@ -1106,7 +1108,9 @@ export const createChatService = async (
           });
           return true;
         };
-        for (let round = 0; round <= 8; round++) {
+        for (let round = 0; ; round++) {
+          const recoveryRound = Boolean(repairing) || protocolRecovery;
+          protocolRecovery = false;
           if (JSON.stringify(messages).length > contextLimit) {
             throw new Error("本轮上下文预算已满，请缩小问题范围");
           }
@@ -1294,17 +1298,12 @@ export const createChatService = async (
               uniqueCalls.set(tool.id, tool);
             }
             const toolCalls = [...uniqueCalls.values()];
-            if (
-              finish !== "tool_calls" ||
-              round === 8 ||
-              calls +
-                toolCalls.filter((tool) => !executedTools.has(tool.id)).length >
-                16
-            ) {
+            if (finish !== "tool_calls") {
               throw new Error(
-                "阅读次数达到上限或工具响应不完整，请缩小问题范围",
+                "模型工具响应不完整（结束标记不是 tool_calls），未执行本次工具；已有候选和草稿保留",
               );
             }
+            toolBudget.assertAvailable();
             messages.push({
               role: "assistant",
               // Source lives in the scoped draft; do not resend the entire HTML as prose.
@@ -1312,6 +1311,8 @@ export const createChatService = async (
               tool_calls: toolCalls,
             });
             let commandFailure = "";
+            let successfulCalls = 0;
+            let failedCalls = 0;
             for (const tool of toolCalls) {
               const signature = JSON.stringify(tool.function);
               const executed = executedTools.get(tool.id);
@@ -1326,7 +1327,6 @@ export const createChatService = async (
                 });
                 continue;
               }
-              calls++;
               const repairForCall = repairing;
               if (repairForCall && tool.function.name === "edit_app_source") {
                 const progress = repairForCall.block.repair!;
@@ -1736,6 +1736,11 @@ export const createChatService = async (
               });
               executedTools.set(tool.id, { signature, text });
               activity.status = result.error ? "failed" : "complete";
+              if (result.error) {
+                failedCalls++;
+              } else {
+                successfulCalls++;
+              }
               if (!result.error) {
                 for (const entry of assistant.blocks!) {
                   if (
@@ -1807,10 +1812,13 @@ export const createChatService = async (
                   readChars,
                   candidateSaved: mutationResult && !result.error,
                   repairAttempt: repairForCall?.block.repair?.attempts,
+                  normalToolRounds: toolBudget.normalRounds,
+                  recoveryToolRounds: toolBudget.recoveryRounds,
                 }),
               );
               dirty = true;
             }
+            toolBudget.record(successfulCalls, failedCalls, recoveryRound);
             if (repairing && repairing.block.repair!.attempts >= 2) {
               throw new Error(
                 `自动修复已达2次，草稿已保留：${repairing.block.repair!.error}`,
@@ -1852,13 +1860,10 @@ export const createChatService = async (
             const pseudo = assistant.blocks!.filter(
               (b) => b.type === "protocol" && b.status === "pending",
             );
-            if (
-              pseudo.length &&
-              !repairing &&
-              protocolCorrections === 0 &&
-              round < 8
-            ) {
+            if (pseudo.length && !repairing && protocolCorrections === 0) {
+              toolBudget.assertAvailable();
               protocolCorrections++;
+              protocolRecovery = true;
               for (const block of pseudo) {
                 if (block.type === "protocol") {
                   block.status = "correcting";
@@ -1911,7 +1916,7 @@ export const createChatService = async (
           }
         }
         if (!completed) {
-          throw new Error("阅读轮次达到上限");
+          throw new Error("本轮工具处理未完成，已有候选和草稿保留");
         }
         fence.finish();
         if (currentHtml) {
@@ -2072,6 +2077,8 @@ export const createChatService = async (
           JSON.stringify({
             event: "chat_preview_turn",
             protocolCorrections,
+            normalToolRounds: toolBudget.normalRounds,
+            recoveryToolRounds: toolBudget.recoveryRounds,
             workspaceGeneration: turnWorkspace?.generation,
             candidateVersion: turnWorkspace?.head?.version,
             protocol: req.headers["x-chat-protocol"] || "legacy",
