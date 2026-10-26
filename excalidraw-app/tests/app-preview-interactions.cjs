@@ -35,7 +35,7 @@ const { chromium } = require("playwright-core");
       window.addEventListener("message", (event) => {
         window.events.push(event.data);
       });
-      const source = `<main id="app"><input id="task"><button data-node="one">已有节点</button><button data-node="review">新增节点</button><section id="explanation">请先选择一个知识节点查看详细解释</section></main><script>(()=>{
+      const source = `<main id="app"><h1 id="app-title" style="color:#192335">知识讲解</h1><input id="task"><button data-node="one">已有节点</button><button data-node="review">新增节点</button><section id="explanation">请先选择一个知识节点查看详细解释</section></main><script>(()=>{
         const data={one:'已有节点的完整解释：机制与场景均已实现。'};
         NoteApp.on('select','app','click','[data-node]',(_,target)=>{
           const detail=data[target.dataset.node];
@@ -92,7 +92,7 @@ const { chromium } = require("playwright-core");
             (event) => event.token === "ordinary" && event.type === "preview",
           ),
         undefined,
-        { timeout: 15000 },
+        { timeout: 15000, polling: 100 },
       )
       .catch(async (error) => {
         console.log(
@@ -120,7 +120,7 @@ const { chromium } = require("playwright-core");
           (event) => event.token === "verifier" && event.type === "preview",
         ),
       undefined,
-      { timeout: 15000 },
+      { timeout: 15000, polling: 100 },
     );
     const result = await page.evaluate(() => ({
       ordinaryStates: window.events.filter(
@@ -133,6 +133,9 @@ const { chromium } = require("playwright-core");
     }));
     assert.ok(
       result.report.errors.some((error) => /data-node=review/.test(error)),
+    );
+    assert.ok(
+      result.report.errors.some((error) => /dark主题.*对比度/.test(error)),
     );
     assert.equal(result.ordinaryStates.length, 0);
     assert.equal(result.ordinaryFocused, true, "probe stole focus");

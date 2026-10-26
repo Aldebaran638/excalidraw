@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 
 const { buildSync } = require("esbuild");
-const puppeteer = require("puppeteer-core");
+const { chromium } = require("playwright-core");
 (async () => {
   const bundle = buildSync({
     entryPoints: ["excalidraw-app/data/htmlRuntime.ts"],
@@ -18,31 +18,23 @@ const puppeteer = require("puppeteer-core");
     "node_modules/html-to-image/dist/html-to-image.js",
     "utf8",
   );
-  const browser = await puppeteer.launch({
+  const browser = await chromium.launch({
     executablePath:
       process.env.BROWSER_EXECUTABLE ||
       "/home/aldebaran/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome",
     headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--no-proxy-server"],
   });
   try {
     const page = await browser.newPage();
     page.on("console", (message) => console.log("browser", message.text()));
     page.on("pageerror", (error) => console.log("pageerror", String(error)));
-    await page.setViewport({ width: 1000, height: 800 });
-    await page.setRequestInterception(true);
-    page.on(
-      "request",
-      (request) =>
-        void (request.url().endsWith("/__runtime-unit")
-          ? request.respond({
-              status: 200,
-              contentType: "text/html",
-              body: "<body></body>",
-            })
-          : request.continue()),
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await page.route("**/__runtime-unit", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<body></body>" }),
     );
     await page.goto("http://127.0.0.1:3009/__runtime-unit");
+    await page.bringToFront();
     await page.addScriptTag({ content: bundle });
     await page.evaluate((captureScript) => {
       const frame = document.createElement("iframe");
@@ -66,6 +58,7 @@ const puppeteer = require("puppeteer-core");
     }, captureScript);
     await page.waitForFunction(
       () => window.events.some((event) => event.type === "ready"),
+      undefined,
       { polling: 100 },
     );
     console.log("ready");
@@ -85,7 +78,7 @@ const puppeteer = require("puppeteer-core");
         {
           token: "capture-test",
           type: "append",
-          data: '<script>(()=>{const task=document.getElementById("task");task.value="导出当前输入，不是初始值";task.dispatchEvent(new Event("input",{bubbles:true}));document.getElementById("scroll").scrollTop=80;addEventListener("message",(event)=>{if(event.data.type!=="test-paint")return;const ctx=document.getElementById("plot").getContext("2d");ctx.fillStyle="#ff0000";ctx.fillRect(0,0,100,60);parent.postMessage({test:"edited"},"*")})})()</script>',
+          data: '<script>(()=>{const task=document.getElementById("task");task.value="导出当前输入，不是初始值";task.dispatchEvent(new Event("input",{bubbles:true}));document.getElementById("scroll").scrollTop=80})()</script>',
         },
         "*",
       ),
@@ -98,20 +91,28 @@ const puppeteer = require("puppeteer-core");
     );
     await page.waitForFunction(
       () => window.events.some((event) => event.type === "complete"),
+      undefined,
       { polling: 100, timeout: 30000 },
     );
-    await page.evaluate(() =>
-      window.appFrame.contentWindow.postMessage({ type: "test-paint" }, "*"),
+    console.log("parser complete");
+    const frame = page.frameLocator("iframe");
+    // Snapshot fixtures mutate the live canvas after parser completion. Native
+    // pointer/keyboard behavior is covered independently by the app replays;
+    // this check must prove current pixels, not an initial or cached image.
+    await frame.locator("#plot").evaluate((node) => {
+      const ctx = node.getContext("2d");
+      ctx.fillStyle = "#ff0000";
+      ctx.fillRect(0, 0, 100, 60);
+    });
+    assert.equal(
+      await frame.locator("#task").inputValue(),
+      "导出当前输入，不是初始值",
     );
-    await page
-      .waitForFunction(
-        () => window.events.some((event) => event.test === "edited"),
-        { polling: 100, timeout: 30000 },
-      )
-      .catch(async (error) => {
-        console.log("events", await page.evaluate(() => window.events));
-        throw error;
-      });
+    assert.equal(
+      await frame.locator("#scroll").evaluate((node) => node.scrollTop),
+      80,
+    );
+    console.log("live state ready");
     await page.evaluate(() =>
       window.appFrame.contentWindow.postMessage(
         { token: "capture-test", type: "capture", requestId: "one" },
@@ -120,11 +121,13 @@ const puppeteer = require("puppeteer-core");
     );
     await page.waitForFunction(
       () => window.events.some((event) => event.type === "capture_result"),
+      undefined,
       { polling: 100, timeout: 20000 },
     );
     const result = await page.evaluate(
       () => window.events.find((event) => event.type === "capture_result").data,
     );
+    console.log("capture received");
     assert.equal(result.error, undefined, result.error);
     assert.ok(result.png.startsWith("data:image/png;base64,"));
     assert.ok(

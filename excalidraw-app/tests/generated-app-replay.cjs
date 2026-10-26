@@ -240,10 +240,27 @@ async function replay(browser, record) {
     await until(() =>
       page.evaluate(() => window.agentReplay.reports.length > 0),
     );
+    if (process.env.REPLAY_REPAIR === "style") {
+      if (!(await page.locator(".excalidraw.theme--dark").count())) {
+        await page.mouse.click(400, 90);
+        await page.keyboard.press("Shift+Alt+d");
+      }
+      await page.locator(".excalidraw.theme--dark").waitFor();
+      await until(() =>
+        page.evaluate(() =>
+          window.agentReplay.reports
+            .at(-1)
+            ?.errors.some((issue) => issue.includes("对比度")),
+        ),
+      );
+    }
     let layoutErrors = await page.evaluate(
       () => window.agentReplay.reports.at(-1).errors,
     );
-    if (process.env.REPLAY_REPAIR === "1") {
+    if (
+      process.env.REPLAY_REPAIR === "1" ||
+      process.env.REPLAY_REPAIR === "style"
+    ) {
       assert.ok(
         layoutErrors.length,
         "fixed regression source unexpectedly has no layout errors",
@@ -257,7 +274,9 @@ async function replay(browser, record) {
       await page
         .getByRole("textbox", { name: "聊天消息", exact: true })
         .fill(
-          "请读取源码并局部修复当前应用中知识节点重叠、遮挡及视口裁切的问题。保留全部知识节点、说明、连线、稳定ID及选择交互，使用自动分组布局避免挪开一对又撞上其他节点。不要重写整份应用。完成后直接给出已保存候选。",
+          process.env.REPLAY_REPAIR === "style"
+            ? "请读取源码并局部修复当前应用的明暗主题可读性：目前深色主题中主标题几乎看不清，使用var(--text)等语义颜色或正确搭配背景。保留全部知识节点、连线、说明、交互、布局和状态，不要重写整份应用。完成后给出已保存候选。"
+            : "请读取源码并局部修复当前应用中知识节点重叠、遮挡及视口裁切的问题。保留全部知识节点、说明、连线、稳定ID及选择交互，使用自动分组布局避免挪开一对又撞上其他节点。不要重写整份应用。完成后直接给出已保存候选。",
         );
       await nativeClick(
         page,
@@ -277,7 +296,12 @@ async function replay(browser, record) {
         }
       }, 650000);
       await fs.writeFile(
-        path.join(output, "layout-repair-result.json"),
+        path.join(
+          output,
+          process.env.REPLAY_REPAIR === "style"
+            ? "style-repair-result.json"
+            : "layout-repair-result.json",
+        ),
         JSON.stringify(answer, null, 2),
       );
       assert.equal(answer.status, "complete", answer.error);
@@ -288,7 +312,12 @@ async function replay(browser, record) {
         `/api/notes/${noteId}/chats/${session.id}/html-artifacts/${candidate.ref.artifactId}?version=${candidate.ref.version}`,
       );
       await fs.writeFile(
-        path.join(output, "layout-repaired.html"),
+        path.join(
+          output,
+          process.env.REPLAY_REPAIR === "style"
+            ? "style-repaired.html"
+            : "layout-repaired.html",
+        ),
         artifact.source,
       );
       assert.equal(
@@ -400,8 +429,10 @@ async function replay(browser, record) {
       result.nodesClicked = count;
     }
     // OS media alone does not switch Excalidraw's explicitly selected theme.
-    await page.mouse.click(400, 90);
-    await page.keyboard.press("Shift+Alt+d");
+    if (!(await page.locator(".excalidraw.theme--dark").count())) {
+      await page.mouse.click(400, 90);
+      await page.keyboard.press("Shift+Alt+d");
+    }
     await page.locator(".excalidraw.theme--dark").waitFor();
     await page.setViewportSize({ width: 430, height: 900 });
     await page.emulateMedia({ colorScheme: "dark" });

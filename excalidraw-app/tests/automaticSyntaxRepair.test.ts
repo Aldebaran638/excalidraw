@@ -301,6 +301,9 @@ describe("automatic syntax repair", () => {
     expect(f.requests).toHaveLength(13);
   });
 
+  // This is a persisted HTTP/SSE integration flow with three read/edit rounds,
+  // not a single in-memory unit; allow slow mounted files without changing the
+  // production task deadline or any assertion about the number of requests.
   it("repairs three distinct syntax defects without asking the user to retry", async () => {
     let current = `${bad.replace("3RR:2", "3RR:2,4ZZ:3")}\n`;
     const edits = [...quotes, { oldText: "4ZZ:", newText: '"4ZZ":' }];
@@ -324,7 +327,7 @@ describe("automatic syntax repair", () => {
     expect(
       message.blocks.find((b: any) => b.type === "html").repair,
     ).toMatchObject({ status: "succeeded", attempts: 3 });
-  });
+  }, 15000);
 
   it("does not automatically repair truncated output or valid code with a runtime throw", async () => {
     const truncated = await fixture(() => html(bad, "length"));

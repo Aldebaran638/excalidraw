@@ -1,5 +1,6 @@
 import { installIframeOverlayScrollbars } from "./iframeOverlayScrollbars";
 import { HTML_THEME_CSS } from "./htmlEnvironment";
+import { inspectHeadingContrast } from "./appContrast";
 import {
   inspectSvgGeometry,
   previewStateKey,
@@ -22,6 +23,7 @@ function bootstrap(
   inputToken: string,
   verifyInteractions: boolean,
   inspectInteractions: typeof inspectNodeInteractions,
+  inspectContrast: typeof inspectHeadingContrast,
 ) {
   const win = window;
   // Capture native references before generated code can replace its globals.
@@ -543,7 +545,11 @@ function bootstrap(
               "#diagram line,#diagram path,#diagram polyline,[data-edge]",
             ).length,
           ),
-          errors: [...runtimeErrors, ...inspectGeometry(doc)]
+          errors: [
+            ...runtimeErrors,
+            ...inspectContrast(doc),
+            ...inspectGeometry(doc),
+          ]
             .slice(0, 8)
             .map((error) => error.slice(0, 500)),
         });
@@ -617,6 +623,7 @@ function bootstrap(
         if (event.data.type === "theme") {
           doc.documentElement.style.colorScheme =
             event.data.data === "dark" ? "dark" : "light";
+          refreshPreview();
           return;
         }
         if (event.data.type === "history_support") {
@@ -788,6 +795,17 @@ function bootstrap(
                 }
                 if (verifyInteractions && !runtimeErrors.length) {
                   try {
+                    const scheme = doc.documentElement.style.colorScheme;
+                    try {
+                      for (const theme of ["light", "dark"]) {
+                        doc.documentElement.style.colorScheme = theme;
+                        for (const issue of inspectContrast(doc)) {
+                          rememberError(`${theme}主题：${issue}`);
+                        }
+                      }
+                    } finally {
+                      doc.documentElement.style.colorScheme = scheme;
+                    }
                     for (const issue of await inspectInteractions(doc)) {
                       rememberError(issue);
                     }
@@ -937,5 +955,5 @@ export const htmlBootstrap = (
     inputToken,
   )},${JSON.stringify(
     verifyInteractions,
-  )},${inspectNodeInteractions.toString()})</script>`;
+  )},${inspectNodeInteractions.toString()},${inspectHeadingContrast.toString()})</script>`;
 };
