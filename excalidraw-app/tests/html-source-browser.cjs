@@ -185,6 +185,48 @@ const source =
       () => Boolean(document.querySelector("#increase")),
       { polling: 100 },
     );
+    if (process.env.HTML_POINTER_ONLY === "1") {
+      await page.bringToFront();
+      console.log(
+        "host inert",
+        await page.$eval(".note-chat-html-frame", (node) => ({
+          inert: [...node.ownerDocument.querySelectorAll("[inert]")].map((n) =>
+            n.outerHTML.slice(0, 120),
+          ),
+          ancestors: (() => {
+            const out = [];
+            for (let p = node; p; p = p.parentElement) {
+              out.push({
+                tag: p.tagName,
+                attr: p.getAttribute("inert"),
+                inert: p.inert,
+                pointer: getComputedStyle(p).pointerEvents,
+              });
+            }
+            return out;
+          })(),
+          modal: [...node.ownerDocument.querySelectorAll("dialog:modal")].map(
+            (n) => n.className,
+          ),
+        })),
+      );
+      await trial.click("#increase");
+      console.log(
+        "native value",
+        await trial.$eval("#value", (node) => node.textContent),
+      );
+      await trial.$eval("#increase", (node) => node.click());
+      console.log(
+        "program value",
+        await trial.$eval("#value", (node) => node.textContent),
+      );
+      await trial.waitForFunction(
+        () => document.querySelector("#value")?.textContent === "2",
+        { polling: 100 },
+      );
+      console.log("PASS real pointer in seeded app");
+      return;
+    }
     await trial.$eval("#increase", (node) => node.click());
     await trial.$eval("#increase", (node) => node.click());
     await trial.$eval("#task", (node) => {

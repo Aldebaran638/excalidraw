@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -9,6 +8,7 @@ import { ChatHtmlStore } from "./chatHtmlStore";
 import { ChatStore, ChatError } from "./chatStore";
 import { readBody, sendJson } from "./notes";
 import { sourceHash, validateAppSource } from "./appSource";
+import { readUtf8 } from "./fileIO";
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -60,7 +60,7 @@ export const createAppApi = (directory: string) => {
             let version = 1;
             if (body.target || restore) {
               const note = JSON.parse(
-                await fs.readFile(path.join(directory, filename), "utf8"),
+                await readUtf8(path.join(directory, filename)),
               );
               const element = note.elements.find(
                 (e: any) =>

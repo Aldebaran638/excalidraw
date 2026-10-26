@@ -69,6 +69,31 @@ const choice = (delta: object, finish_reason: string | null = null) => ({
   choices: [{ delta, finish_reason }],
 });
 describe("note-owned chat", () => {
+  it.each(["ENOENT", "ENODATA", "EBUSY", "EIO"])(
+    "retries transient %s reads without recreating sessions or hiding a real deletion",
+    async (code) => {
+      const { dir, noteId } = await fixture();
+      const store = new ChatStore(dir);
+      const original = await store.create(noteId);
+      const read = vi
+        .spyOn(fs, "readFile")
+        .mockRejectedValueOnce(Object.assign(new Error("transient"), { code }));
+      try {
+        expect((await store.read(noteId, original.id)).id).toBe(original.id);
+        expect(read).toHaveBeenCalledTimes(2);
+      } finally {
+        read.mockRestore();
+      }
+      const filename = path.join(dir, ".chats", noteId, `${original.id}.json`);
+      await fs.unlink(filename);
+      await expect(store.read(noteId, original.id)).rejects.toMatchObject({
+        status: 404,
+      });
+      await expect(fs.access(filename)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    },
+  );
   it("edits and regenerates historical questions without losing the original conversation", async () => {
     const { dir, noteId } = await fixture();
     const inputs: string[] = [];
@@ -355,7 +380,7 @@ describe("note-owned chat", () => {
     const { dir, noteId } = await fixture();
     let calls = 0;
     const transport = vi.fn(async () =>
-      ++calls === 1
+      ++calls <= 3
         ? new Response("offline", { status: 503 })
         : stream([choice({ content: "重试成功" }), choice({}, "stop")]),
     ) as typeof fetch;

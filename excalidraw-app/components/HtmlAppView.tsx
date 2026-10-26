@@ -8,8 +8,13 @@ import {
 import { htmlBootstrap } from "../data/htmlRuntime";
 import { isHtmlState } from "../data/chatHtml";
 import { HTML_RUNTIME_VERSION } from "../data/clientProtocol";
+import { APP_LIBRARIES, isAppLibrary } from "../data/appLibraries";
+import { isPreviewReport } from "../data/appPreview";
+import { HtmlLibraryStream } from "../data/htmlLibraryStream";
 
 import { ChatIconButton } from "./ChatIconButton";
+
+import type { AppPreviewReport } from "../data/appPreview";
 
 import type { HtmlState } from "../data/chatHtml";
 import type { ReactNode } from "react";
@@ -17,8 +22,10 @@ import type { ReactNode } from "react";
 export type HtmlAppRuntime = {
   state: () => HtmlState;
   capture: () => Promise<string>;
+  preview?: () => AppPreviewReport | null;
 };
 const captureLibraries = new WeakMap<Window, Promise<string>>();
+const appLibraries = new WeakMap<Window, Map<string, Promise<string>>>();
 export const HtmlAppView = ({
   source,
   complete,
@@ -32,7 +39,9 @@ export const HtmlAppView = ({
   onError,
   onHistory,
   onDraft,
+  onPreview,
   actions,
+  verifyInteractions = false,
 }: {
   source: string;
   complete: boolean;
@@ -44,13 +53,16 @@ export const HtmlAppView = ({
   onError?: (error: string) => void;
   onHistory?: (redo: boolean) => void;
   onDraft?: (state: HtmlState) => void;
+  onPreview?: (report: AppPreviewReport) => void;
   title?: string;
   active?: boolean;
   actions?: ReactNode;
+  verifyInteractions?: boolean;
 }) => {
   const root = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const current = useRef({
+    identity,
     source,
     complete,
     onState,
@@ -58,8 +70,10 @@ export const HtmlAppView = ({
     onError,
     onHistory,
     onDraft,
+    onPreview,
   });
   current.current = {
+    identity,
     source,
     complete,
     onState,
@@ -67,17 +81,20 @@ export const HtmlAppView = ({
     onError,
     onHistory,
     onDraft,
+    onPreview,
   };
   const initial = useRef(initialState);
   initial.current = initialState;
   const pumpRef = useRef<() => void>(() => {});
   const [expanded, setExpanded] = useState(false);
   const [error, setError] = useState("");
+  const [phase, setPhase] = useState("starting");
   useEffect(() => {
     if (!active) {
       return;
     }
     setError("");
+    setPhase("starting");
     const node = root.current!;
     const doc = node.ownerDocument;
     const win = doc.defaultView!;
@@ -90,6 +107,14 @@ export const HtmlAppView = ({
     let ready = false;
     let finished = false;
     let disposed = false;
+    let observedPreview: AppPreviewReport | null = null;
+    const isCurrent = () => !disposed && current.current.identity === identity;
+    const projector = new HtmlLibraryStream();
+    let sourceQueue = Promise.resolve();
+    const prepared = new Map<
+      string,
+      { resolve: () => void; reject: (error: Error) => void; timer: number }
+    >();
     const pending = new Map<
       string,
       {
@@ -104,28 +129,66 @@ export const HtmlAppView = ({
     frame.setAttribute("sandbox", "allow-scripts");
     frame.referrerPolicy = "no-referrer";
     const token = win.crypto.randomUUID();
+    const inputToken = win.crypto.randomUUID();
     const send = (type: string, data?: unknown, requestId?: string) =>
-      frame.contentWindow?.postMessage({ token, type, data, requestId }, "*");
+      frame.contentWindow?.postMessage(
+        { token: inputToken, type, data, requestId },
+        "*",
+      );
     const pump = () => {
-      if (!ready) {
+      if (!ready || finished || !isCurrent()) {
         return;
       }
       const latest = current.current;
-      if (latest.source.length > offset) {
-        send("append", latest.source.slice(offset));
+      if (latest.source.length > offset || (latest.complete && !finished)) {
+        const final = latest.complete && !finished;
+        const pieces = projector.push(latest.source.slice(offset), final);
         offset = latest.source.length;
-      }
-      if (latest.complete && !finished) {
-        send("finish");
-        finished = true;
+        if (final) {
+          finished = true;
+        }
+        sourceQueue = sourceQueue
+          .then(async () => {
+            for (const piece of pieces) {
+              if (!isCurrent()) {
+                return;
+              }
+              if ("html" in piece) {
+                send("append", piece.html);
+              } else {
+                await new Promise<void>((resolve, reject) => {
+                  const timer = win.setTimeout(() => {
+                    prepared.delete(piece.library);
+                    reject(new Error("本地依赖准备超时"));
+                  }, 30000);
+                  prepared.set(piece.library, { resolve, reject, timer });
+                  send("library_prepare", { name: piece.library });
+                });
+              }
+            }
+            if (final && isCurrent()) {
+              send("finish");
+            }
+          })
+          .catch((error) => {
+            if (isCurrent()) {
+              fail(String(error));
+            }
+          });
       }
     };
     pumpRef.current = pump;
     const fail = (message: string) => {
+      if (!isCurrent()) {
+        return;
+      }
       setError(message);
+      setPhase("error");
       current.current.onError?.(message);
     };
     const runtime: HtmlAppRuntime = {
+      preview: () =>
+        isCurrent() ? win.structuredClone(observedPreview) : null,
       state: () => structuredClone(state),
       capture: async () => {
         let library = captureLibraries.get(win);
@@ -159,23 +222,85 @@ export const HtmlAppView = ({
           : "light",
       );
     const receive = (event: MessageEvent) => {
-      if (event.source !== frame.contentWindow || event.data?.token !== token) {
+      if (
+        !isCurrent() ||
+        event.source !== frame.contentWindow ||
+        event.data?.token !== token
+      ) {
         return;
       }
       const { type, data } = event.data;
       if (type === "ready") {
         ready = true;
+        setPhase("building");
         if (current.current.onHistory) {
           send("history_support", true);
         }
         theme();
         pump();
+      } else if (type === "complete") {
+        setPhase("complete");
+      } else if (type === "preview" && isPreviewReport(data)) {
+        observedPreview = win.structuredClone(data);
+        current.current.onPreview?.(data);
+      } else if (type === "preview_dirty") {
+        observedPreview = null;
+      } else if (type === "library_prepared") {
+        const pending = prepared.get(data?.name);
+        if (pending) {
+          prepared.delete(data.name);
+          win.clearTimeout(pending.timer);
+          if (data.error) {
+            pending.reject(new Error(String(data.error)));
+          } else {
+            pending.resolve();
+          }
+        }
       } else if (type === "history") {
         if (data === "undo" || data === "redo") {
           current.current.onHistory?.(data === "redo");
         }
       } else if (type === "error") {
         fail(`运行出错：${String(data).slice(0, 500)}`);
+      } else if (type === "library_request" && isAppLibrary(data?.name)) {
+        const name = data.name as keyof typeof APP_LIBRARIES;
+        let cache = appLibraries.get(win);
+        if (!cache) {
+          cache = new Map();
+          appLibraries.set(win, cache);
+        }
+        let request = cache.get(name);
+        if (!request) {
+          request = win
+            .fetch(`/app-libraries/${APP_LIBRARIES[name].file}`)
+            .then(async (response) => {
+              if (
+                !response.ok ||
+                !response.headers.get("content-type")?.includes("javascript")
+              ) {
+                throw new Error("本地库读取失败，请刷新到最新版本");
+              }
+              const source = await response.text();
+              if (source.length > 6000000) {
+                throw new Error("本地库超过大小限制");
+              }
+              return source;
+            });
+          cache.set(name, request);
+          void request.catch(() => cache!.delete(name));
+        }
+        void request.then(
+          (source) => {
+            if (!disposed) {
+              send("library_result", { name, source });
+            }
+          },
+          (error) => {
+            if (!disposed) {
+              send("library_result", { name, error: String(error) });
+            }
+          },
+        );
       } else if (type === "patch_rejected") {
         fail(
           `部分更新未应用，已保留你的操作：${String(data?.reason).slice(
@@ -230,8 +355,16 @@ export const HtmlAppView = ({
     }
     win.addEventListener("message", receive);
     node.appendChild(frame);
-    frame.srcdoc = htmlBootstrap(token, state, runtimeVersion);
-    current.current.onRuntime?.(runtime);
+    frame.srcdoc = htmlBootstrap(
+      token,
+      state,
+      runtimeVersion,
+      "",
+      inputToken,
+      verifyInteractions,
+    );
+    const registerRuntime = current.current.onRuntime;
+    registerRuntime?.(runtime);
     const boot = win.setTimeout(() => {
       if (!ready) {
         fail("应用启动超时，源码仍保留，可重新运行");
@@ -239,12 +372,17 @@ export const HtmlAppView = ({
     }, 10000);
     return () => {
       disposed = true;
+      for (const request of prepared.values()) {
+        win.clearTimeout(request.timer);
+        request.reject(new Error("应用已关闭"));
+      }
+      prepared.clear();
       win.clearTimeout(boot);
       for (const request of pending.values()) {
         win.clearTimeout(request.timer);
         request.reject(new Error("应用已关闭"));
       }
-      current.current.onRuntime?.(null);
+      registerRuntime?.(null);
       observer.disconnect();
       win.removeEventListener("message", receive);
       send("dispose");
@@ -252,10 +390,10 @@ export const HtmlAppView = ({
     };
     // Stable parser per source version; streaming updates are appended, never remounted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [identity, active, runtimeVersion]);
+  }, [identity, active, runtimeVersion, verifyInteractions]);
   useEffect(() => pumpRef.current());
   return (
-    <div className="html-app-view">
+    <div className="html-app-view" data-app-status={phase}>
       <dialog
         open
         ref={dialog}

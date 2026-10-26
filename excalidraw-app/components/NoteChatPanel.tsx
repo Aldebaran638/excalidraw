@@ -470,6 +470,7 @@ export const NoteChatPanel = ({
                     sessionId={selected}
                     generating={message.status === "generating"}
                     controller={controller}
+                    turnId={message.turnId}
                   />
                 ) : null;
               })}

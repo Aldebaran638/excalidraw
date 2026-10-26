@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { parse as parseHtml } from "parse5";
 import { parse as parseJS } from "acorn";
 
+import { APP_CDN_SCRIPTS } from "../data/appLibraries";
+
 import { ChatError } from "./chatStore";
 import { SourceToolError } from "./sourceErrors";
 
@@ -146,6 +148,7 @@ export const readSourcePage = (
   }
   return {
     startLine,
+    startColumn,
     endLine: startLine + page.length - 1,
     totalLines: lines.length,
     source: page.join("\n"),
@@ -154,6 +157,59 @@ export const readSourcePage = (
     nextColumn: 0,
   };
 };
+
+/** Authorize whole-line edits only after all columns have actually been read.
+ * Long minified lines can span several pages; reading their final fragment alone
+ * is not permission to replace the unseen prefix. Coverage is revision scoped. */
+type ReadLineCoverage = {
+  length: number;
+  spans: { start: number; end: number }[];
+};
+export class SourceReadCoverage {
+  private revisions = new Map<string, Map<number, ReadLineCoverage>>();
+  record(source: string, page: ReturnType<typeof readSourcePage>) {
+    const hash = sourceHash(source);
+    const lines = source.split("\n");
+    const revision =
+      this.revisions.get(hash) || new Map<number, ReadLineCoverage>();
+    this.revisions.set(hash, revision);
+    for (let line = page.startLine; line <= page.endLine; line++) {
+      const entry: ReadLineCoverage = revision.get(line) || {
+        length: lines[line - 1].length,
+        spans: [],
+      };
+      entry.spans.push({
+        start: line === page.startLine ? page.startColumn : 0,
+        end:
+          line === page.endLine && page.nextColumn > 0
+            ? page.nextColumn
+            : entry.length,
+      });
+      entry.spans.sort((a, b) => a.start - b.start);
+      revision.set(line, entry);
+    }
+  }
+  firstUnread(hash: string, start: number, end: number) {
+    const revision = this.revisions.get(hash);
+    for (let line = start; line <= end; line++) {
+      const entry = revision?.get(line);
+      if (!entry) {
+        return line;
+      }
+      let through = 0;
+      for (const span of entry.spans) {
+        if (span.start > through) {
+          break;
+        }
+        through = Math.max(through, span.end);
+      }
+      if (through < entry.length) {
+        return line;
+      }
+    }
+    return null;
+  }
+}
 
 export const searchSource = (
   source: string,
@@ -285,8 +341,12 @@ export const validateAppSource = (source: string) => {
             "html_incomplete",
           );
         }
-        if (node.attrs?.some((a: any) => a.name === "src")) {
-          throw new ChatError(422, "应用脚本必须自包含，不能加载外部源码");
+        const src = node.attrs?.find((a: any) => a.name === "src")?.value;
+        if (src && !(APP_CDN_SCRIPTS as readonly string[]).includes(src)) {
+          throw new ChatError(
+            422,
+            "外部脚本不在固定版本库清单中，请使用 NoteApp.load('react'|'d3'|'mermaid') 或受支持的CDN地址",
+          );
         }
         try {
           parseJS(
@@ -312,10 +372,10 @@ export const validateAppSource = (source: string) => {
           const excerpt = location
             ? script
                 .split("\n")
-                .slice(Math.max(0, location.line - 2), location.line + 1)
+                .slice(Math.max(0, location.line - 6), location.line + 5)
                 .map((text: string, index: number) => {
                   const isErrorLine =
-                    Math.max(0, location.line - 2) + index ===
+                    Math.max(0, location.line - 6) + index ===
                     location.line - 1;
                   const start = isErrorLine
                     ? Math.max(0, location.column - 200)
@@ -340,10 +400,14 @@ export const validateAppSource = (source: string) => {
   visit(tree);
 };
 
+export type SourceEdit = { newText: string } & (
+  | { oldText: string }
+  | { startLine: number; endLine: number }
+);
 export const replaceSource = (
   source: string,
   hash: string,
-  edits: { oldText: string; newText: string }[],
+  edits: SourceEdit[],
 ) => {
   if (hash !== sourceHash(source)) {
     throw new SourceToolError(
@@ -359,22 +423,73 @@ export const replaceSource = (
     .map((edit) => {
       if (
         !edit ||
-        typeof edit.oldText !== "string" ||
-        !edit.oldText ||
         typeof edit.newText !== "string" ||
-        Object.keys(edit).some((key) => !["oldText", "newText"].includes(key))
+        Object.keys(edit).some(
+          (key) =>
+            !["oldText", "newText", "startLine", "endLine"].includes(key),
+        )
       ) {
-        throw new ChatError(400, "每项编辑须提供精确的 oldText 和 newText");
+        throw new ChatError(
+          400,
+          "每项编辑须提供newText及唯一oldText或完整行范围",
+        );
+      }
+      if ("startLine" in edit || "endLine" in edit) {
+        const range = edit as {
+          startLine: number;
+          endLine: number;
+          newText: string;
+        };
+        const lines = source.split("\n");
+        if (
+          "oldText" in edit ||
+          !Number.isInteger(range.startLine) ||
+          !Number.isInteger(range.endLine) ||
+          range.startLine < 1 ||
+          range.endLine < range.startLine ||
+          range.endLine > lines.length ||
+          range.endLine - range.startLine >= 200
+        ) {
+          throw new SourceToolError(
+            400,
+            "行范围无效、混用了oldText或超过200行，请重新读取所需范围",
+            "invalid_request",
+          );
+        }
+        const start = lines
+          .slice(0, range.startLine - 1)
+          .reduce((n, line) => n + line.length + 1, 0);
+        const end =
+          range.endLine < lines.length
+            ? lines
+                .slice(0, range.endLine)
+                .reduce((n, line) => n + line.length + 1, 0)
+            : source.length;
+        const newText =
+          source.slice(start, end).endsWith("\n") &&
+          !range.newText.endsWith("\n")
+            ? `${range.newText}\n`
+            : range.newText;
+        return { start, end, newText };
+      }
+      if (
+        !("oldText" in edit) ||
+        typeof edit.oldText !== "string" ||
+        !edit.oldText
+      ) {
+        throw new ChatError(400, "oldText必须是非空字符串");
       }
       const start = source.indexOf(edit.oldText);
       if (start < 0 || source.indexOf(edit.oldText, start + 1) >= 0) {
         throw new SourceToolError(
           409,
-          "待替换内容必须唯一匹配，请重新读取更完整的上下文",
+          start < 0
+            ? "待替换内容不存在：不要猜空格或引号。先搜索定位，再read_app_source读取相关完整行，改用{startLine,endLine,newText}局部行替换（不带oldText）"
+            : "待替换内容出现多次：请读取相关完整行，使用{startLine,endLine,newText}明确范围，或加入前后唯一上下文，不要全局替换",
           "replacement",
         );
       }
-      return { start, end: start + edit.oldText.length, ...edit };
+      return { start, end: start + edit.oldText.length, newText: edit.newText };
     })
     .sort((a, b) => a.start - b.start);
   if (ranges.some((range, i) => i > 0 && range.start < ranges[i - 1].end)) {
@@ -394,7 +509,7 @@ export const replaceSource = (
 export const editSource = (
   source: string,
   hash: string,
-  edits: { oldText: string; newText: string }[],
+  edits: SourceEdit[],
 ) => {
   const next = replaceSource(source, hash, edits);
   validateAppSource(next);

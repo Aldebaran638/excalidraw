@@ -268,38 +268,62 @@ describe("automatic syntax repair", () => {
     ).toMatchObject({ status: "succeeded", attempts: 2 });
   });
 
-  it("stops after two repair edits, retaining the latest invalid draft", async () => {
+  it("stops after six repair edits, retaining the latest invalid draft", async () => {
+    let current = `${bad}\n`;
     const f = await fixture((_request, index) => {
       if (!index) {
         return html(bad);
       }
-      if (index === 1 || index === 3) {
+      if (index % 2 === 1) {
         return chunk(tool("read_app_source", {}));
       }
-      if (index === 2) {
-        return chunk(
-          replace(`${bad}\n`, [{ oldText: "实验室", newText: "尝试一" }]),
-        );
+      const attempt = index / 2;
+      if (attempt > 6) {
+        throw new Error("must stop after six edits");
       }
-      if (index === 4) {
-        return chunk(
-          replace(`${bad.replace("实验室", "尝试一")}\n`, [
-            { oldText: "尝试一", newText: "尝试二" },
-          ]),
-        );
-      }
-      throw new Error("must stop after two edits");
+      const edit = {
+        oldText: attempt === 1 ? "实验室" : `尝试${attempt - 1}`,
+        newText: `尝试${attempt}`,
+      };
+      const response = chunk(replace(current, [edit]));
+      current = current.replace(edit.oldText, edit.newText);
+      return response;
     });
     const { message } = await f.send();
     expect(message.status).toBe("failed");
     const block = message.blocks.find((block: any) => block.type === "html");
-    expect(block.repair).toMatchObject({ status: "failed", attempts: 2 });
+    expect(block.repair).toMatchObject({ status: "failed", attempts: 6 });
     expect(block.saved).not.toBe(true);
     expect(
       (await f.store.read(f.noteId, f.session.id, block.ref.artifactId, 1))
         .source,
-    ).toContain("尝试二");
-    expect(f.requests).toHaveLength(5);
+    ).toContain("尝试6");
+    expect(f.requests).toHaveLength(13);
+  });
+
+  it("repairs three distinct syntax defects without asking the user to retry", async () => {
+    let current = `${bad.replace("3RR:2", "3RR:2,4ZZ:3")}\n`;
+    const edits = [...quotes, { oldText: "4ZZ:", newText: '"4ZZ":' }];
+    const f = await fixture((_request, index) => {
+      if (!index) {
+        return html(current.trimEnd());
+      }
+      if (index % 2) {
+        return chunk(tool("read_app_source", {}));
+      }
+      const edit = edits[index / 2 - 1];
+      if (!edit) {
+        throw new Error("must finish after third repair");
+      }
+      const response = chunk(replace(current, [edit]));
+      current = current.replace(edit.oldText, edit.newText);
+      return response;
+    });
+    const { message } = await f.send();
+    expect(message.status).toBe("complete");
+    expect(
+      message.blocks.find((b: any) => b.type === "html").repair,
+    ).toMatchObject({ status: "succeeded", attempts: 3 });
   });
 
   it("does not automatically repair truncated output or valid code with a runtime throw", async () => {
@@ -457,7 +481,7 @@ describe("automatic syntax repair", () => {
     expect(f.requests).toHaveLength(2);
   });
 
-  it("does not retry an upstream network failure during repair", async () => {
+  it("bounds pre-stream network retries during repair and preserves the draft", async () => {
     const f = await fixture((_request, index) => {
       if (!index) {
         return html(bad);
@@ -469,7 +493,7 @@ describe("automatic syntax repair", () => {
     expect(
       message.blocks.find((block: any) => block.type === "html").draftSaved,
     ).toBe(true);
-    expect(f.requests).toHaveLength(2);
+    expect(f.requests).toHaveLength(4);
   });
 
   it("does not reset reading budgets or tool-round limits during repair", async () => {
@@ -494,7 +518,7 @@ describe("automatic syntax repair", () => {
     expect(
       message.blocks.find((block: any) => block.type === "html").saved,
     ).not.toBe(true);
-    expect(f.requests.length).toBeLessThanOrEqual(9);
+    expect(f.requests.length).toBeLessThanOrEqual(201);
     expect(
       message.activities.some(
         (activity: any) => activity.errorCode === "budget",

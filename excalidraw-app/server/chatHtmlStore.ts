@@ -9,6 +9,7 @@ import { isHtmlState } from "../data/chatHtml";
 import { ChatError, ChatStore } from "./chatStore";
 import { sourceHash, validateAppSource } from "./appSource";
 import { diagnoseStyles } from "./styleDiagnostics";
+import { readUtf8 } from "./fileIO";
 
 import type { HtmlArtifact, HtmlState } from "../data/chatHtml";
 
@@ -67,12 +68,9 @@ export class ChatHtmlStore {
       const folder = this.versionFolder(noteId, id, version, draft);
       try {
         const data = JSON.parse(
-          await fs.readFile(path.join(folder, "metadata.json"), "utf8"),
+          await readUtf8(path.join(folder, "metadata.json")),
         );
-        const source = await fs.readFile(
-          path.join(folder, "source.html"),
-          "utf8",
-        );
+        const source = await readUtf8(path.join(folder, "source.html"));
         if (
           data.noteId !== noteId ||
           data.artifactId !== id ||
@@ -115,7 +113,7 @@ export class ChatHtmlStore {
     }
     try {
       const data = JSON.parse(
-        await fs.readFile(this.file(noteId, sessionId, id, version), "utf8"),
+        await readUtf8(this.file(noteId, sessionId, id, version)),
       );
       if (
         data.kind !== "html" ||

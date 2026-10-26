@@ -74,26 +74,28 @@ export const CHAT_WIDGET_TOOLS = [
 export const APP_SOURCE_TOOLS = [
   functionTool(
     "search_app_source",
-    "Locate literal text ONLY in the selected source. Returns line numbers and sourceHash, bounded context and next cursor. Does NOT authorize edits: read_app_source is still required.",
+    "Locate literal text ONLY in the selected source. Optional revision=baseline reads the immutable input source before this turn's edits, useful for restoring omitted content. Default current searches the latest candidate. Does NOT authorize edits: read_app_source of current is still required.",
     {
       query: { type: "string", minLength: 1, maxLength: 200 },
       cursor: { type: "integer", minimum: 0 },
       limit: { type: "integer", minimum: 1, maximum: 10 },
       contextLines: { type: "integer", minimum: 0, maximum: 3 },
+      revision: { type: "string", enum: ["current", "baseline"] },
     },
   ),
   functionTool(
     "read_app_source",
-    "Read the explicitly selected application's source.html, with line numbers and sourceHash. Use startLine/lineCount for paging; follow nextLine/nextColumn for long lines (columns are zero-based UTF-16 offsets). Read before editing; no paths or other targets accepted.",
+    "Read the explicitly selected application's source.html with line numbers and sourceHash. Default revision=current reads the latest candidate; revision=baseline reads the immutable input to this turn, only for reference/restoration and never for editing. Read current again before editing. Follow nextLine/nextColumn for long lines (zero-based UTF-16 columns); no paths or other targets.",
     {
       startLine: { type: "integer", minimum: 1 },
       lineCount: { type: "integer", minimum: 1, maximum: 200 },
       startColumn: { type: "integer", minimum: 0 },
+      revision: { type: "string", enum: ["current", "baseline"] },
     },
   ),
   functionTool(
     "edit_app_source",
-    "Apply exact, uniquely matching replacements atomically to the sourceHash you just read. Creates a saved preview candidate only, NEVER applies to the canvas. Preserve unrelated code. Re-read after an edit before another edit.",
+    "Atomically edit the sourceHash you just read. Each edit uses EITHER unique oldText/newText OR whole-line startLine/endLine/newText (1-based inclusive, max 200 lines). Prefer line ranges for long/ambiguous text; preserve all unchanged lines and never copy the line-number prefixes. Creates a saved preview candidate only, NEVER applies to the canvas. Re-read after an edit.",
     {
       sourceHash: { type: "string" },
       edits: {
@@ -105,8 +107,22 @@ export const APP_SOURCE_TOOLS = [
           properties: {
             oldText: { type: "string" },
             newText: { type: "string" },
+            startLine: { type: "integer", minimum: 1 },
+            endLine: { type: "integer", minimum: 1 },
           },
-          required: ["oldText", "newText"],
+          required: ["newText"],
+          oneOf: [
+            {
+              required: ["oldText"],
+              not: {
+                anyOf: [{ required: ["startLine"] }, { required: ["endLine"] }],
+              },
+            },
+            {
+              required: ["startLine", "endLine"],
+              not: { required: ["oldText"] },
+            },
+          ],
           additionalProperties: false,
         },
       },
@@ -137,7 +153,20 @@ export function validateSourceArguments(name: string, args: unknown) {
   if (!validate || !validate(args)) {
     throw new SourceToolError(
       400,
-      "源码工具参数无效：请遵循当前工具的参数定义",
+      `源码工具参数无效：${
+        (validate?.errors || [])
+          .slice(0, 4)
+          .map(
+            (error) =>
+              `${error.dataPath || "/"} ${error.message}${
+                error.keyword === "additionalProperties"
+                  ? ` (${JSON.stringify(error.params)})`
+                  : ""
+              }`,
+          )
+          .join("; ")
+          .slice(0, 600) || "工具不存在"
+      }`,
       "invalid_request",
     );
   }

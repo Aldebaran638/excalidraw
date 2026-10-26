@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 
 import { validId, readMetadata } from "../data/noteIdentity";
 
+import { readUtf8 } from "./fileIO";
+
 import type { ChatSession, ChatSummary } from "../data/chatTypes";
 
 export class ChatError extends Error {
@@ -20,7 +22,7 @@ export const identityFiles = async (directory: string, noteId: string) => {
     try {
       if (
         readMetadata(
-          JSON.parse(await fs.readFile(path.join(directory, name), "utf8"))
+          JSON.parse(await readUtf8(path.join(directory, name)))
             .repositoryMetadata,
         )?.noteId === noteId
       ) {
@@ -102,9 +104,8 @@ export class ChatStore {
   }
   async read(noteId: string, id: string): Promise<ChatSession> {
     try {
-      const data = JSON.parse(
-        await fs.readFile(this.file(noteId, id), "utf8"),
-      ) as ChatSession;
+      const raw = await readUtf8(this.file(noteId, id));
+      const data = JSON.parse(raw) as ChatSession;
       if (
         data.version !== 1 ||
         data.noteId !== noteId ||

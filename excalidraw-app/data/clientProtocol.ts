@@ -1,9 +1,9 @@
-// v4 adds persistent candidate workspaces and authoritative execution blocks.
-export const CHAT_PROTOCOL_VERSION = 4;
-export const HTML_RUNTIME_VERSION = 2;
+// v9 verifies diagram selections in a disposable, non-persisting runtime.
+export const CHAT_PROTOCOL_VERSION = 9;
+export const HTML_RUNTIME_VERSION = 3;
 export const CHAT_HEADERS = {
   "X-Chat-Protocol": String(CHAT_PROTOCOL_VERSION),
-  "X-Chat-Capabilities": "html-blocks",
+  "X-Chat-Capabilities": "html-blocks,preview-feedback,interaction-probes",
 };
 export const supportsHtmlBlocks = (
   headers: Record<string, string | string[] | undefined>,

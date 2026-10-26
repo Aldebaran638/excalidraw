@@ -7,10 +7,14 @@ import {
   checkIcon,
 } from "@excalidraw/excalidraw/components/icons";
 
+import { HTML_SYNTAX_REPAIR_LIMIT } from "../data/chatHtml";
+
 import { HtmlAppView } from "./HtmlAppView";
 import { ChatIconButton } from "./ChatIconButton";
+import { AppPreviewCheck } from "./AppPreviewCheck";
 
 import type { HtmlAppRuntime } from "./HtmlAppView";
+import type { AppPreviewReport } from "../data/appPreview";
 
 import type { ChatBlock, HtmlArtifact, HtmlState } from "../data/chatHtml";
 import type { NoteChatController } from "../data/noteChats";
@@ -21,12 +25,14 @@ export const ChatHtmlCard = ({
   sessionId,
   generating,
   controller,
+  turnId,
 }: {
   block: Extract<ChatBlock, { type: "html" }>;
   noteId: string;
   sessionId: string;
   generating: boolean;
   controller: NoteChatController;
+  turnId: string;
 }) => {
   const root = useRef<HTMLElement>(null);
   const runtime = useRef<HtmlAppRuntime | null>(null);
@@ -49,6 +55,31 @@ export const ChatHtmlCard = ({
   const saving = useRef(Promise.resolve());
   const timer = useRef<number | undefined>(undefined);
   const endpoint = `/api/notes/${noteId}/chats/${sessionId}/html-artifacts/${block.ref.artifactId}?version=${block.ref.version}`;
+  const liveEndpoint = useRef(endpoint);
+  liveEndpoint.current = endpoint;
+  const verified = useRef(new Map<string, string[]>());
+  const [verification, setVerification] = useState<{
+    endpoint: string;
+    report: AppPreviewReport;
+    source: string;
+    state: HtmlState;
+  }>();
+  const sendPreview = (report: AppPreviewReport) => {
+    const win = root.current?.ownerDocument.defaultView;
+    if (!win || !generating || liveEndpoint.current !== endpoint) {
+      return;
+    }
+    void win
+      .fetch(
+        `/api/notes/${noteId}/chats/${sessionId}/turns/${turnId}/preview`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ref: block.ref, report }),
+        },
+      )
+      .catch(() => {});
+  };
   useEffect(() => {
     if (!data?.target && !data?.editBase) {
       return;
@@ -158,7 +189,14 @@ export const ChatHtmlCard = ({
       : undefined;
   const failure = block.error || resolved?.recovery?.error;
   const repair = block.repair || resolved?.repair;
-  const complete = Boolean(!failure && (block.complete || resolved?.complete));
+  // The final source file is authoritative. Wait for it before closing the
+  // parser, so a terminal message cannot finish a partial streaming projection.
+  const complete = Boolean(!failure && resolved?.complete);
+  const streamSource = block.source || "";
+  const appSource =
+    resolved?.source && resolved.source.startsWith(streamSource)
+      ? resolved.source
+      : streamSource || resolved?.source || "";
   const targetNow = data?.target
     ? controller.htmlHost?.read(data.target.elementId)
     : null;
@@ -179,6 +217,29 @@ export const ChatHtmlCard = ({
   };
   return (
     <section ref={root} className="note-chat-html-card" aria-label="HTML 应用">
+      {generating && root.current && verification?.endpoint === endpoint && (
+        <AppPreviewCheck
+          anchor={root.current}
+          identity={endpoint}
+          source={verification.source}
+          state={verification.state}
+          runtimeVersion={block.runtimeVersion || data?.runtimeVersion || 1}
+          onResult={(report) => {
+            if (liveEndpoint.current !== verification.endpoint) {
+              return;
+            }
+            verified.current.set(endpoint, report.errors);
+            sendPreview({
+              ...verification.report,
+              errors: [...verification.report.errors, ...report.errors].slice(
+                0,
+                8,
+              ),
+            });
+            setVerification(undefined);
+          }}
+        />
+      )}
       <header>
         <strong>{data?.title || "HTML 应用"}</strong>
         <span>
@@ -190,7 +251,10 @@ export const ChatHtmlCard = ({
           · v{block.ref.version} ·{" "}
           {generating &&
           (repair?.status === "pending" || repair?.status === "repairing")
-            ? `正在修正语法错误 · 第 ${Math.min(repair.attempts + 1, 2)}/2 次`
+            ? `正在修正语法错误 · 第 ${Math.min(
+                repair.attempts + 1,
+                repair.maxAttempts || HTML_SYNTAX_REPAIR_LIMIT,
+              )}/${repair.maxAttempts || HTML_SYNTAX_REPAIR_LIMIT} 次`
             : repair?.status === "succeeded"
             ? "语法已修复，源码已保存"
             : failure
@@ -208,6 +272,22 @@ export const ChatHtmlCard = ({
             : "校验及保存中"}
         </span>
       </header>
+      {block.preview && (
+        <details className="note-chat-reading">
+          <summary>
+            {block.preview.status === "checked"
+              ? "初步运行检查通过（不代表完整视觉或知识验收）"
+              : block.preview.status === "repairing"
+              ? "正在根据实际预览修正"
+              : block.preview.status === "issues"
+              ? "预览检查未通过"
+              : "源码已保存，尚未收到自动预览检查"}
+          </summary>
+          {block.preview.issues?.map((issue, index) => (
+            <p key={index}>{issue}</p>
+          ))}
+        </details>
+      )}
       {!!data?.styleDiagnostics?.length && (
         <details className="note-chat-reading">
           <summary>
@@ -254,11 +334,7 @@ export const ChatHtmlCard = ({
       )}
       <div inert={original}>
         <HtmlAppView
-          source={
-            original
-              ? baseline?.source || ""
-              : block.source || resolved?.source || ""
-          }
+          source={original ? baseline?.source || "" : appSource}
           complete={original ? Boolean(baseline?.complete) : complete}
           initialState={
             original ? baseline?.state || state.current : state.current
@@ -270,12 +346,52 @@ export const ChatHtmlCard = ({
               ? baseline?.complete
               : !failure &&
                   Boolean(block.source || resolved?.source) &&
-                  (generating || running || resolved?.complete),
+                  (generating ||
+                    running ||
+                    resolved?.complete ||
+                    (block.saved && block.complete)),
           )}
           onState={original ? undefined : persist}
           onDraft={original ? undefined : persist}
+          onPreview={
+            original
+              ? undefined
+              : (report) => {
+                  if (!generating) {
+                    return;
+                  }
+                  if (
+                    report.nodes &&
+                    report.ids.includes("explanation") &&
+                    !report.errors.length &&
+                    !verified.current.has(endpoint)
+                  ) {
+                    const win = root.current!.ownerDocument.defaultView!;
+                    setVerification({
+                      endpoint,
+                      report,
+                      source: appSource,
+                      state: win.structuredClone(state.current),
+                    });
+                  } else {
+                    sendPreview({
+                      ...report,
+                      errors: [
+                        ...report.errors,
+                        ...(verified.current.get(endpoint) || []),
+                      ].slice(0, 8),
+                    });
+                  }
+                }
+          }
           onRuntime={(value) => {
             runtime.current = value;
+            controller.setHtmlInspection(
+              noteId,
+              sessionId,
+              block.ref,
+              value && !original ? () => value.preview?.() || null : null,
+            );
           }}
           actions={
             <>
@@ -321,7 +437,12 @@ export const ChatHtmlCard = ({
                   <ChatIconButton
                     label="导入笔记"
                     icon={stackPushIcon}
-                    disabled={!resolved || working}
+                    disabled={
+                      !resolved ||
+                      working ||
+                      block.preview?.status === "issues" ||
+                      block.preview?.status === "repairing"
+                    }
                     onClick={() =>
                       action(() =>
                         controller.placeHtml(
@@ -363,7 +484,13 @@ export const ChatHtmlCard = ({
           <ChatIconButton
             label={applied ? "已应用到画布" : "确认应用修改"}
             icon={checkIcon}
-            disabled={working || original || applied}
+            disabled={
+              working ||
+              original ||
+              applied ||
+              block.preview?.status === "repairing" ||
+              block.preview?.status === "issues"
+            }
             onClick={() =>
               action(() =>
                 controller.applyHtml(

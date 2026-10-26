@@ -23,6 +23,8 @@ import { ChatStore } from "../server/chatStore";
 import { ChatHtmlStore } from "../server/chatHtmlStore";
 import { createChatService } from "../server/chat";
 import { readSSE } from "../data/sse";
+import { CHAT_HEADERS } from "../data/clientProtocol";
+import { previewStateKey } from "../data/appPreview";
 
 const fake =
   "<tool_call>\n<function=edit_app_source>\n<parameter=edits>[]</parameter>\n</function>\n</tool_call>";
@@ -129,9 +131,10 @@ async function fixture(
       }
       return { status: response.status, data };
     },
-    send: async (extra = {}) => {
+    send: async (extra = {}, onEvent?: (event: any) => Promise<void>) => {
       const response = await fetch(`${url}/turns`, {
         method: "POST",
+        headers: onEvent ? CHAT_HEADERS : undefined,
         body: JSON.stringify({
           turnId: randomUUID(),
           revision: session.revision,
@@ -152,7 +155,9 @@ async function fixture(
         };
       }
       for await (const event of readSSE(response.body!)) {
-        events.push(JSON.parse(event.data));
+        const value = JSON.parse(event.data);
+        events.push(value);
+        await onEvent?.(value);
       }
       session = await store.read(noteId, session.id);
       return {
@@ -162,6 +167,7 @@ async function fixture(
         error: undefined,
       };
     },
+    url,
   };
 }
 
@@ -181,7 +187,7 @@ describe("chat tool round limits", () => {
         "stop",
       ),
     );
-    const result = await f.send();
+    const result = await f.send({ content: "解释当前应用" });
     expect(result.message?.error).toContain("模型工具响应不完整");
     expect(result.message?.activities).toHaveLength(0);
   });
@@ -195,7 +201,7 @@ describe("chat tool round limits", () => {
         ? call("get_note_outline", {})
         : stream({ content: "完成" });
     });
-    const result = await f.send();
+    const result = await f.send({ content: "解释当前应用" });
     expect(result.message?.status).toBe("complete");
     expect(
       result.message?.activities?.filter((a) => a.status === "failed"),
@@ -224,6 +230,398 @@ describe("chat tool round limits", () => {
       result.message?.activities?.every((a) => a.status === "failed"),
     ).toBe(true);
   }, 30000);
+});
+
+describe("agent automatic task completion", () => {
+  it("does not finish after a read when syntax repair is followed by preview repair", async () => {
+    const sent = new Set<number>();
+    const f = await fixture((request, index) => {
+      if (index === 0) {
+        return stream({
+          content:
+            '```html\n<main id="app"><p>十四</p></main><script>const n=3RC;</script>\n```',
+        });
+      }
+      if (index === 1 || index === 3) {
+        return call("read_app_source", {});
+      }
+      if (index === 2 || index === 4) {
+        return call("edit_app_source", {
+          sourceHash: JSON.parse(
+            request.messages.filter((m: any) => m.role === "tool").at(-1)
+              .content,
+          ).sourceHash,
+          edits: [
+            index === 2
+              ? { oldText: "3RC", newText: '"3RC"' }
+              : { oldText: "十四", newText: "十六" },
+          ],
+        });
+      }
+      throw new Error("unexpected model round");
+    });
+    const result = await f.send(
+      { content: "生成至少16个可点击节点的应用", workspace: undefined },
+      async (event) => {
+        const block = event.block;
+        if (
+          block?.type !== "html" ||
+          !block.saved ||
+          sent.has(block.ref.version)
+        ) {
+          return;
+        }
+        sent.add(block.ref.version);
+        await fetch(`${f.url}/turns/${event.turnId}/preview`, {
+          method: "POST",
+          body: JSON.stringify({
+            ref: block.ref,
+            report: {
+              ids: ["app"],
+              nodes: block.ref.version === 2 ? 14 : 16,
+              relations: 20,
+              errors: [],
+            },
+          }),
+        });
+      },
+    );
+    expect(result.message?.status).toBe("complete");
+    expect(result.message?.activities?.map((a) => a.name)).toEqual([
+      "read_app_source",
+      "edit_app_source",
+      "read_app_source",
+      "edit_app_source",
+    ]);
+    expect(
+      result.message?.blocks?.findLast((b) => b.type === "html"),
+    ).toMatchObject({ ref: { version: 3 }, preview: { status: "checked" } });
+    expect(f.requests).toHaveLength(5);
+  });
+
+  it("allows hash-bound range edits only after all changed lines have been read", async () => {
+    const initial =
+      "<!doctype html>\n<main>\n<h1>原版</h1>\n<p>保留说明</p>\n</main>";
+    let hash = "";
+    const f = await fixture((request, index) => {
+      if (index === 0) {
+        return call("read_app_source", { startLine: 1, lineCount: 1 });
+      }
+      if (index === 1) {
+        hash = JSON.parse(
+          request.messages.filter((m: any) => m.role === "tool").at(-1).content,
+        ).sourceHash;
+        return call("edit_app_source", {
+          sourceHash: hash,
+          edits: [{ startLine: 3, endLine: 3, newText: "<h1>新版</h1>" }],
+        });
+      }
+      if (index === 2) {
+        expect(JSON.parse(request.messages.at(-1).content)).toMatchObject({
+          errorCode: "version_conflict",
+        });
+        return call("read_app_source", { startLine: 3, lineCount: 1 });
+      }
+      if (index === 3) {
+        return call("edit_app_source", {
+          sourceHash: hash,
+          edits: [{ startLine: 3, endLine: 3, newText: "<h1>新版</h1>" }],
+        });
+      }
+      return stream({ content: "候选已保存。" });
+    }, initial);
+    const result = await f.send();
+    expect(result.message?.status).toBe("complete");
+    expect(result.message?.activities?.map((a) => a.status)).toEqual([
+      "complete",
+      "failed",
+      "complete",
+      "complete",
+    ]);
+    const block = result.message?.blocks?.findLast((b) => b.type === "html");
+    expect(block?.type).toBe("html");
+    if (block?.type !== "html") {
+      throw new Error("missing candidate");
+    }
+    const candidate = await f.html.read(
+      f.noteId,
+      f.session().id,
+      block.ref.artifactId,
+      block.ref.version,
+    );
+    expect(candidate.source).toBe(initial.replace("原版", "新版"));
+    expect(
+      (await f.html.read(f.noteId, f.session().id, f.app.artifactId, 1)).source,
+    ).toBe(initial);
+  });
+
+  it("uses real preview feedback to repair the same card through source tools", async () => {
+    const f = await fixture((request, index) => {
+      if (index === 0) {
+        return stream({
+          content: '```html\n<main id="app"><p>十四</p></main>\n```',
+        });
+      }
+      if (index === 1) {
+        return call("read_app_source", {});
+      }
+      if (index === 2) {
+        return call("edit_app_source", {
+          sourceHash: JSON.parse(
+            request.messages.filter((m: any) => m.role === "tool").at(-1)
+              .content,
+          ).sourceHash,
+          edits: [{ oldText: "十四", newText: "十六" }],
+        });
+      }
+      return stream({ content: "已保存修正后的作品。" });
+    });
+    const sent = new Set<string>();
+    const result = await f.send(
+      { content: "生成至少16个可点击节点的架构图应用", workspace: undefined },
+      async (event) => {
+        const block = event.block;
+        if (
+          block?.type !== "html" ||
+          !block.saved ||
+          sent.has(`${block.ref.version}`)
+        ) {
+          return;
+        }
+        sent.add(`${block.ref.version}`);
+        const response = await fetch(`${f.url}/turns/${event.turnId}/preview`, {
+          method: "POST",
+          body: JSON.stringify({
+            ref: block.ref,
+            report: {
+              ids: ["app"],
+              nodes: block.ref.version === 1 ? 14 : 16,
+              relations: 20,
+              errors: [],
+            },
+          }),
+        });
+        expect(response.status).toBe(200);
+      },
+    );
+    expect(result.message?.status).toBe("complete");
+    const blocks =
+      result.message?.blocks?.filter((b) => b.type === "html") || [];
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      saved: true,
+      ref: { version: 2 },
+      preview: { status: "checked" },
+    });
+    expect(result.message?.activities?.map((a) => a.name)).toEqual([
+      "read_app_source",
+      "edit_app_source",
+    ]);
+  });
+  it("restores omitted original nodes and title from a read-only baseline in the same turn", async () => {
+    const initial =
+      '<main><h1 id="app-title">原版</h1><button data-node="old">old</button></main>';
+    const review = '<button data-node="review">review</button>';
+    const old = '<button data-node="old">old</button>';
+    const f = await fixture((request, index) => {
+      if (index === 0 || index === 5) {
+        return call("read_app_source", {});
+      }
+      if (index === 1) {
+        return call("edit_app_source", {
+          sourceHash: JSON.parse(request.messages.at(-1).content).sourceHash,
+          edits: [{ oldText: old, newText: review }],
+        });
+      }
+      if (index === 2) {
+        return stream({ content: "修改已经完成。" });
+      }
+      if (index === 3) {
+        return call("search_app_source", {
+          query: "data-node",
+          revision: "baseline",
+        });
+      }
+      if (index === 4) {
+        expect(JSON.parse(request.messages.at(-1).content)).toMatchObject({
+          readonly: true,
+          revision: "baseline",
+        });
+        return call("read_app_source", { revision: "baseline" });
+      }
+      if (index === 6) {
+        return call("edit_app_source", {
+          sourceHash: JSON.parse(request.messages.at(-1).content).sourceHash,
+          edits: [
+            { oldText: "原版", newText: "新版" },
+            { oldText: review, newText: old + review },
+          ],
+        });
+      }
+      return stream({ content: "修正候选已保存。" });
+    }, initial);
+    await f.select();
+    const sent = new Set<number>();
+    const result = await f.send(
+      {
+        content: "标题改为“新版”；新增data-node=review，保留全部原节点与交互。",
+        workspacePreview: {
+          ref: { artifactId: f.app.artifactId, version: 1 },
+          report: {
+            ids: ["app-title"],
+            title: "原版",
+            nodes: 1,
+            nodeKeys: ["old"],
+            relations: 0,
+            errors: [],
+            stateKey: previewStateKey(f.app.state),
+          },
+        },
+      },
+      async (event) => {
+        const block = event.block;
+        if (
+          block?.type !== "html" ||
+          !block.saved ||
+          sent.has(block.ref.version)
+        ) {
+          return;
+        }
+        sent.add(block.ref.version);
+        const repaired = block.ref.version >= 3;
+        const response = await fetch(`${f.url}/turns/${event.turnId}/preview`, {
+          method: "POST",
+          body: JSON.stringify({
+            ref: block.ref,
+            report: {
+              ids: ["app-title"],
+              title: repaired ? "新版" : "原版",
+              nodes: repaired ? 2 : 1,
+              nodeKeys: repaired ? ["old", "review"] : ["review"],
+              relations: 1,
+              errors: [],
+            },
+          }),
+        });
+        expect(response.status).toBe(200);
+      },
+    );
+    expect(result.message?.status).toBe("complete");
+    const blocks =
+      result.message?.blocks?.filter((b) => b.type === "html") || [];
+    expect(blocks).toHaveLength(1);
+    const block = blocks[0];
+    if (block.type !== "html") {
+      throw new Error("missing candidate");
+    }
+    expect(block.preview?.status).toBe("checked");
+    const saved = await f.html.read(
+      f.noteId,
+      f.session().id,
+      block.ref.artifactId,
+      block.ref.version,
+    );
+    expect(saved.source).toBe(
+      initial.replace("原版", "新版").replace(old, old + review),
+    );
+    expect(
+      (await f.html.read(f.noteId, f.session().id, f.app.artifactId, 1)).source,
+    ).toBe(initial);
+    expect(
+      f.requests[5].tools.some(
+        (tool: any) => tool.function.name === "edit_app_source",
+      ),
+    ).toBe(false);
+  });
+  it("recovers a missing application without asking the user to resend", async () => {
+    const f = await fixture((_, index) =>
+      stream({
+        content:
+          index === 0
+            ? "已经为你生成组件。"
+            : "```html\n<main><button>试试</button></main>\n```",
+      }),
+    );
+    const result = await f.send({
+      content: "生成一个简单计数器组件",
+      workspace: undefined,
+    });
+    expect(result.message?.status).toBe("complete");
+    expect(
+      result.message?.blocks?.some((b) => b.type === "html" && b.saved),
+    ).toBe(true);
+    expect(f.requests).toHaveLength(2);
+  });
+  it("recovers false success after reading, then really edits the selected version", async () => {
+    const f = await fixture((request, index) => {
+      if (index === 0) {
+        return call("read_app_source", {});
+      }
+      if (index === 1) {
+        return stream({ content: "已成功修改标题。" });
+      }
+      if (index === 2) {
+        const result = request.messages
+          .filter((m: any) => m.role === "tool")
+          .at(-1);
+        return call("edit_app_source", {
+          sourceHash: JSON.parse(result.content).sourceHash,
+          edits: [{ oldText: "原版", newText: "真正修改" }],
+        });
+      }
+      return stream({ content: "候选已经保存，请确认。" });
+    });
+    const result = await f.send();
+    expect(result.message?.status).toBe("complete");
+    expect(
+      result.message?.activities?.some(
+        (a) => a.name === "edit_app_source" && a.status === "complete",
+      ),
+    ).toBe(true);
+  });
+  it("continues truncated HTML into the same card and validates the finished source", async () => {
+    const f = await fixture((_, index) =>
+      stream(
+        {
+          content:
+            index === 0
+              ? '```html\n<main id="app"><h1>中文'
+              : "计数器</h1><button>增加</button></main>\n```",
+        },
+        index === 0 ? "length" : "stop",
+      ),
+    );
+    const result = await f.send({
+      content: "生成一个计数器组件",
+      workspace: undefined,
+    });
+    const blocks =
+      result.message?.blocks?.filter((b) => b.type === "html") || [];
+    expect(result.message?.status).toBe("complete");
+    expect(blocks).toHaveLength(1);
+    expect((blocks[0] as any).saved).toBe(true);
+    expect(f.requests).toHaveLength(2);
+  });
+  it("bounds no-progress recovery and never publishes a fabricated success", async () => {
+    const f = await fixture(() => stream({ content: "我已经创建成功。" }));
+    const result = await f.send({
+      content: "生成一个计数器组件",
+      workspace: undefined,
+    });
+    expect(result.message?.status).toBe("failed");
+    expect(f.requests).toHaveLength(4);
+    expect(
+      result.message?.blocks?.some((b) => b.type === "html" && b.saved),
+    ).toBe(false);
+  });
+  it("does not turn ordinary questions into automatic editing requests", async () => {
+    const f = await fixture(() =>
+      stream({ content: "TCP通过序号和确认实现可靠传输。" }),
+    );
+    const result = await f.send({ content: "解释一下TCP" });
+    expect(result.message?.status).toBe("complete");
+    expect(f.requests).toHaveLength(1);
+  });
 });
 
 describe("tool prose framing", () => {
@@ -357,6 +755,42 @@ describe("source tool contracts", () => {
 });
 
 describe("authoritative editing and workspaces", () => {
+  it("steers three identical reads into a real edit instead of exhausting 100 recovery rounds", async () => {
+    const f = await fixture((request, index) => {
+      if (index < 3) {
+        return call("read_app_source", { startLine: 1, lineCount: 60 });
+      }
+      if (index === 3) {
+        const names = request.tools.map((tool: any) => tool.function.name);
+        expect(names).toContain("edit_app_source");
+        expect(names).toContain("search_app_source");
+        expect(names).not.toContain("read_app_source");
+        expect(request.messages.at(-1).content).toContain("连续三次");
+        const result = request.messages.findLast(
+          (message: any) => message.role === "tool",
+        );
+        return call("edit_app_source", {
+          sourceHash: JSON.parse(result.content).sourceHash,
+          edits: [{ oldText: "原版", newText: "修改完成" }],
+        });
+      }
+      expect(request.tools.map((tool: any) => tool.function.name)).toContain(
+        "read_app_source",
+      );
+      return stream({ content: "已保存修改候选。" });
+    });
+    await f.select();
+    const { message } = await f.send();
+    expect(message?.status).toBe("complete");
+    expect(f.requests).toHaveLength(5);
+    expect(
+      message?.activities?.filter((activity) => activity.status === "failed"),
+    ).toHaveLength(0);
+    expect(f.session().appWorkspace?.head?.version).toBe(2);
+    expect(
+      (await f.html.read(f.noteId, f.session().id, f.app.artifactId, 1)).source,
+    ).toBe(source);
+  });
   it("preserves a saved candidate if subsequent prose is a fake call and correction fails", async () => {
     const f = await fixture((request, i) => {
       if (!i) {
@@ -477,10 +911,10 @@ describe("authoritative editing and workspaces", () => {
     const f = await fixture(() => stream({ content: fake }));
     await f.select();
     const { message } = await f.send();
-    expect(f.requests).toHaveLength(2);
+    expect(f.requests).toHaveLength(5);
     expect(message?.blocks?.at(-1)).toMatchObject({
       type: "edit_result",
-      text: expect.stringContaining("未通过真实工具"),
+      text: expect.stringContaining("修改未完成"),
     });
     expect(f.session().appWorkspace?.head?.version).toBe(1);
     expect(f.session().appWorkspace?.candidateNumber).toBe(0);

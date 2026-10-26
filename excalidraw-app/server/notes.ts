@@ -7,6 +7,7 @@ import { watch } from "chokidar";
 import { readMetadata } from "../data/noteIdentity";
 
 import { identityFiles } from "./chatStore";
+import { readUtf8 } from "./fileIO";
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -81,7 +82,7 @@ export const createNoteService = async (directory: string) => {
       return;
     }
     try {
-      const revision = revisionOf(await fs.readFile(file, "utf8"));
+      const revision = revisionOf(await readUtf8(file));
       const write = recent.get(file);
       if (write && write.expires > Date.now() && write.revision === revision) {
         return;
@@ -173,7 +174,7 @@ export const createNoteService = async (directory: string) => {
         return true;
       }
       if (req.method === "GET" || req.method === "HEAD") {
-        const text = await fs.readFile(file, "utf8");
+        const text = await readUtf8(file);
         res.setHeader("ETag", `"${revisionOf(text)}"`);
         res.setHeader("Cache-Control", "no-store");
         res.statusCode = 200;
@@ -195,7 +196,7 @@ export const createNoteService = async (directory: string) => {
         const run = async () => {
           let existing: string | null = null;
           try {
-            existing = await fs.readFile(file, "utf8");
+            existing = await readUtf8(file);
           } catch (e) {
             if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
               throw e;

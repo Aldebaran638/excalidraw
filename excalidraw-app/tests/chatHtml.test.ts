@@ -33,7 +33,7 @@ const fixture = async () => {
 };
 describe("HTML chat artifacts", () => {
   it.each(["truncated", "unclosed", "prose-failed"])(
-    "preserves %s output without automatic generation or repair",
+    "preserves %s output with bounded continuation only for truncation",
     async (mode) => {
       const { directory, noteId, session } = await fixture();
       let requests = 0;
@@ -99,7 +99,7 @@ describe("HTML chat artifacts", () => {
         events.push(JSON.parse(event.data));
       }
       const message = events.at(-1).message;
-      expect(requests).toBe(1);
+      expect(requests).toBe(mode === "truncated" ? 3 : 1);
       expect(message.status).toBe("failed");
       const block = message.blocks.find(
         (block: { type: string }) => block.type === "html",

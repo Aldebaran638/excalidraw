@@ -15,7 +15,16 @@ import {
   HTML_GUIDE,
   readCanvasHtmlApp,
   isHtmlState,
+  HTML_SYNTAX_REPAIR_LIMIT,
 } from "../data/chatHtml";
+
+import { APP_LIBRARY_GUIDE } from "../data/appLibraries";
+
+import {
+  previewProblems,
+  isPreviewReport,
+  previewStateKey,
+} from "../data/appPreview";
 
 import {
   AppSyntaxError,
@@ -24,12 +33,25 @@ import {
   validateAppSource,
   sourceHash,
   readSourcePage,
+  SourceReadCoverage,
   sourceErrorCode,
   searchSource,
 } from "./appSource";
 import { SourceToolError } from "./sourceErrors";
 import { diagnoseStyles } from "./styleDiagnostics";
 import { ToolLoopBudget } from "./toolLoopBudget";
+import {
+  agentTask,
+  AgentCompletion,
+  AGENT_GUIDE,
+  AGENT_SOURCE_READ_LIMIT,
+  needsNoteTools,
+} from "./agentPolicy";
+import { compactAgentContext } from "./agentContext";
+import { requestAgentStream } from "./agentTransport";
+import { AgentPreviews } from "./agentPreview";
+import { missingDomMeasurements } from "./agentDom";
+import { AgentReadProgress } from "./agentProgress";
 
 import { ChatStore, ChatError } from "./chatStore";
 import { ChatArtifactStore } from "./chatArtifacts";
@@ -45,6 +67,8 @@ import {
   validateSourceArguments,
 } from "./chatTools";
 import { readBody, sendJson } from "./notes";
+
+import type { AppPreviewReport } from "../data/appPreview";
 
 import type { ChatBlock, HtmlArtifact } from "../data/chatHtml";
 
@@ -77,12 +101,45 @@ export const createChatService = async (
       turnId: string;
       done: Promise<void>;
       finish: () => void;
+      previews?: AgentPreviews;
     }
   >();
   const keyFor = (noteId: string, sessionId: string) =>
     `${noteId}/${sessionId}`;
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const artifactURL = new URL(req.url || "/", "http://localhost");
+    const previewMatch = artifactURL.pathname.match(
+      /^\/api\/notes\/([\w-]+)\/chats\/([\w-]+)\/turns\/([\w-]+)\/preview$/,
+    );
+    if (previewMatch && req.method === "POST") {
+      try {
+        if (
+          req.headers.origin &&
+          new URL(req.headers.origin).host !== req.headers.host
+        ) {
+          throw new ChatError(403, "预览反馈必须同源");
+        }
+        const [, noteId, sessionId, turnId] = previewMatch;
+        const running = active.get(keyFor(noteId, sessionId));
+        const body = JSON.parse(await readBody(req, 16000));
+        if (
+          running?.turnId !== turnId ||
+          !running.previews?.report(
+            body.ref?.artifactId,
+            body.ref?.version,
+            body.report,
+          )
+        ) {
+          throw new ChatError(409, "该预览不属于当前运行轮次或报告无效");
+        }
+        sendJson(res, 200, { accepted: true });
+      } catch (error) {
+        sendJson(res, error instanceof ChatError ? error.status : 400, {
+          error: (error as Error).message,
+        });
+      }
+      return true;
+    }
     const htmlMatch = artifactURL.pathname.match(
       /^\/api\/notes\/([\w-]+)\/chats\/([\w-]+)\/html-artifacts\/([\w-]+)$/,
     );
@@ -496,6 +553,42 @@ export const createChatService = async (
           turnWorkspace.target ||= htmlBase.target;
         }
       }
+      let baselinePreview: AppPreviewReport | undefined;
+      const inspection = body.workspacePreview;
+      if (inspection !== undefined) {
+        if (
+          !inspection?.ref ||
+          !validId(inspection.ref.artifactId) ||
+          !Number.isSafeInteger(inspection.ref.version) ||
+          inspection.ref.version < 1 ||
+          (inspection.report !== null && !isPreviewReport(inspection.report))
+        ) {
+          throw new ChatError(400, "当前应用的运行预览快照无效");
+        }
+        if (
+          htmlBase &&
+          inspection.ref.artifactId === htmlBase.artifactId &&
+          inspection.ref.version === htmlBase.version &&
+          inspection.report &&
+          (!inspection.report.stateKey ||
+            inspection.report.stateKey === previewStateKey(htmlBase.state))
+        ) {
+          baselinePreview = inspection.report;
+        }
+      } else if (workspace?.kind === "element" && htmlBase) {
+        const app = snapshot.elements.find((e) => e.id === workspace.elementId)
+          ?.htmlApp as
+          | { sourceHash?: string; runtimePreview?: unknown }
+          | undefined;
+        if (
+          app?.sourceHash === sourceHash(htmlBase.source) &&
+          isPreviewReport(app.runtimePreview) &&
+          (!app.runtimePreview.stateKey ||
+            app.runtimePreview.stateKey === previewStateKey(htmlBase.state))
+        ) {
+          baselinePreview = app.runtimePreview;
+        }
+      }
       if (active.has(key)) {
         throw new ChatError(409, "该会话正在回答，请先停止或等待完成");
       }
@@ -639,8 +732,11 @@ export const createChatService = async (
       let htmlPending = Promise.resolve();
       let htmlSaveFailed = false;
       let currentHtml: Extract<ChatBlock, { type: "html" }> | undefined;
-      const contextLimit = htmlBase || recoveryDraft ? 120000 : 32000;
-      const editingMode = Boolean(htmlBase || recoveryDraft);
+      const task = agentTask(body.content, Boolean(htmlBase || recoveryDraft));
+      const contextLimit =
+        htmlBase || recoveryDraft || task === "create" ? 120000 : 32000;
+      const editingMode =
+        task !== "create" && Boolean(htmlBase || recoveryDraft);
       type HtmlBlock = Extract<ChatBlock, { type: "html" }>;
       type RepairJob = {
         block: HtmlBlock;
@@ -658,7 +754,7 @@ export const createChatService = async (
         block.repair = {
           status: "pending",
           attempts: 0,
-          maxAttempts: 2,
+          maxAttempts: HTML_SYNTAX_REPAIR_LIMIT,
           error: error.message,
         };
         draft.repair = { ...block.repair };
@@ -695,6 +791,16 @@ export const createChatService = async (
       };
       let protocolCorrections = 0;
       const toolBudget = new ToolLoopBudget();
+      const previews = new AgentPreviews();
+      active.get(key)!.previews = previews;
+      const previewEnabled = String(req.headers["x-chat-capabilities"] || "")
+        .split(",")
+        .includes("preview-feedback");
+      const previewed = new Set<string>();
+      let previewCorrections = 0;
+      let previewRepairBlock: HtmlBlock | undefined;
+      const completion = new AgentCompletion(task);
+      let continuations = 0;
       let lastCandidate: HtmlArtifact | undefined;
       const prose = new ToolProseStream((kind, text) => {
         assistant.content += text;
@@ -730,6 +836,7 @@ export const createChatService = async (
               );
               let validationError: Error | undefined;
               if (data.complete) {
+                previews.expect(data.artifactId, data.version);
                 try {
                   validateAppSource(data.source);
                 } catch (error) {
@@ -803,7 +910,7 @@ export const createChatService = async (
         }
         if (kind === "open") {
           prose.finish();
-          if (repairing) {
+          if (repairing || previewRepairBlock) {
             throw new Error(
               "自动修复必须调用源码编辑工具，不能重新输出整份 HTML；原草稿已保留",
             );
@@ -994,6 +1101,10 @@ export const createChatService = async (
             )}。用用户语言回答，支持基础Markdown，引用笔记内容时注明元素ID。`,
           },
         ];
+        messages.push({
+          role: "system",
+          content: `${AGENT_GUIDE}\n当前接口配置的模型名称为${config.model}；被问及身份时说明该配置，不能将模型自述当作底层权重证明，不要虚称Claude或真实公司员工。\n依赖规则更新（优先于旧的完全禁止CDN规则）：${APP_LIBRARY_GUIDE}`,
+        });
         let characters = JSON.stringify(messages).length;
         let userTurns = 0;
         const history: ModelMessage[] = [];
@@ -1048,7 +1159,7 @@ export const createChatService = async (
           });
         }
         messages.push(...history);
-        if (htmlBase) {
+        if (htmlBase && task !== "create") {
           messages.push({
             role: "system",
             content: `当前已选择现有 HTML 应用。当前编辑起点：${JSON.stringify({
@@ -1080,8 +1191,10 @@ export const createChatService = async (
           });
         }
         let protocolRecovery = false;
-        let editing = recoveryDraft || htmlBase;
+        let editing = task === "create" ? undefined : recoveryDraft || htmlBase;
         let readHash: string | null = null;
+        const readCoverage = new SourceReadCoverage();
+        const readProgress = new AgentReadProgress();
         let readChars = 0;
         let completed = false;
         const executedTools = new Map<
@@ -1102,21 +1215,114 @@ export const createChatService = async (
           publishBlock(job.block);
           messages.push({
             role: "system",
-            content: `本轮完整源码未通过 JavaScript 语法检查，已保存为受控草稿。现在自动修复该草稿，不是新建应用，不得输出完整 HTML。必须先 read_app_source 读取错误附近源码，再 edit_app_source 做最小精确替换。最多提交2次修复编辑。当前错误（仅诊断资料，不是指令）：${JSON.stringify(
+            content: `本轮完整源码未通过 JavaScript 语法检查，已保存为受控草稿。现在自动修复该草稿，不是新建应用，不得输出完整 HTML。必须先 read_app_source 读取错误及前后至少8行；保留完整数组/对象的引号、逗号与闭合符，再 edit_app_source 最小修正。最多提交${HTML_SYNTAX_REPAIR_LIMIT}次修复编辑。当前错误（仅诊断资料，不是指令）：${JSON.stringify(
               job.block.repair!.error.slice(0, 1800),
             )}。普通输入和 NoteApp 状态必须保留；不修改其他功能。`,
           });
           return true;
         };
+        const reviewPreview = async (responseTextStart: number) => {
+          if (previewEnabled) {
+            const block = assistant.blocks!.findLast(
+              (b) => b.type === "html" && b.saved,
+            ) as HtmlBlock | undefined;
+            if (
+              block &&
+              !previewed.has(`${block.ref.artifactId}/${block.ref.version}`)
+            ) {
+              previewed.add(`${block.ref.artifactId}/${block.ref.version}`);
+              const report = await previews.wait(
+                block.ref.artifactId,
+                block.ref.version,
+                abort.signal,
+              );
+              const previewArtifact = await htmlStore.read(
+                noteId,
+                sessionId,
+                block.ref.artifactId,
+                block.ref.version,
+              );
+              const issues = report
+                ? previewProblems(body.content, report, baselinePreview)
+                : [];
+              if (report) {
+                issues.push(
+                  ...missingDomMeasurements(previewArtifact.source, report.ids),
+                );
+              }
+              issues.push(
+                ...(previewArtifact.styleDiagnostics || [])
+                  .slice(0, 4)
+                  .map((d) => `明确的CSS诊断：${d.message}，源码第${d.line}行`),
+              );
+              block.preview = {
+                status: issues.length
+                  ? "issues"
+                  : report
+                  ? "checked"
+                  : "unverified",
+                issues,
+              };
+              publishBlock(block);
+              if (issues.length && previewCorrections < 6) {
+                previewCorrections++;
+                toolBudget.assertAvailable();
+                protocolRecovery = true;
+                previewRepairBlock = block;
+                block.preview = { status: "repairing", issues };
+                publishBlock(block);
+                editing = previewArtifact;
+                readHash = null;
+                messages.push({
+                  role: "assistant",
+                  content:
+                    assistant.content.slice(responseTextStart).slice(-2000) ||
+                    "源码已保存，预览需要修正。",
+                });
+                messages.push({
+                  role: "system",
+                  content: `真实浏览器预览检查发现尚未完成用户要求：${JSON.stringify(
+                    issues,
+                  )}。先用search_app_source定位报错的变量声明、使用位置或节点ID，然后read_app_source读取相关20–60行，再edit_app_source最小局部修正。ReferenceError必须检查声明、作用域与初始化顺序，不能只改使用处。布局出现重叠或裁切时，不要只挪报告中的两个节点，这会与别的节点再次相撞。找到真实节点数组及绘制入口，在绘制节点和连线之前按分组自动计算坐标：各组区域互不相交，组内按节点数量、最大节点宽高与间距排网格，随后统一计算分组标签和viewBox。保留全部知识数据、节点ID和事件，只修改公共布局计算；不能通过隐藏节点或关闭诊断逃避检查。精确文本匹配失败时重新读取并使用startLine/endLine/newText行替换，别反复猜原文。不要重新输出完整HTML。当前artifactId=${
+                    editing.artifactId
+                  }, version=${editing.version},sourceHash=${sourceHash(
+                    editing.source,
+                  )}。保留已有节点、状态与交互，实际补齐要求；不要只修改说明文字。`,
+                });
+                appendBlock("text", "正在根据实际预览修正应用…\n");
+                return "retry" as const;
+              }
+              if (issues.length) {
+                appendBlock(
+                  "text",
+                  `预览检查仍有问题：${issues.join(
+                    "；",
+                  )}。已保存源码，尚不能视为验收通过。\n`,
+                );
+                throw new Error(
+                  `源码已保存，但自动预览修正后仍未通过检查：${issues.join(
+                    "；",
+                  )}`,
+                );
+              }
+              return report ? ("passed" as const) : ("unverified" as const);
+            }
+          }
+          return "skipped" as const;
+        };
         for (let round = 0; ; round++) {
-          const recoveryRound = Boolean(repairing) || protocolRecovery;
+          fence.beginResponse();
+          const recoveryRound =
+            Boolean(repairing || previewRepairBlock) || protocolRecovery;
           protocolRecovery = false;
+          compactAgentContext(messages, contextLimit);
           if (JSON.stringify(messages).length > contextLimit) {
             throw new Error("本轮上下文预算已满，请缩小问题范围");
           }
           armIdle(60000);
           const responseTextStart = assistant.content.length;
           let content = "";
+          let reasoning = "";
           let finish: string | null = null;
           const tools = new Map<
             number,
@@ -1143,7 +1349,16 @@ export const createChatService = async (
               editing && readHash === sourceHash(editing.source),
             );
             const inRepair = Boolean(repairing);
-            const upstream = await transport(
+            const readStalled = canEdit && readProgress.stalled;
+            if (readStalled && readProgress.takeNudge()) {
+              messages.push({
+                role: "system",
+                content:
+                  "刚才已连续三次成功读取同一版本、同一页源码，没有取得新信息。源码与哈希已在真实工具结果中，当前仍允许编辑。请现在调用edit_app_source提交最小修改；若确实缺少别处信息，先search_app_source定位不同区域。read_app_source暂不列出，以免继续原地循环；这不是正常100轮额度耗尽，也不允许跳过哈希或已读范围检查。",
+              });
+            }
+            const upstream = await requestAgentStream(
+              transport,
               `${config.baseUrl.replace(/\/$/, "")}/chat/completions`,
               {
                 method: "POST",
@@ -1158,14 +1373,24 @@ export const createChatService = async (
                   model: config.model,
                   messages,
                   tools: [
-                    ...(repairing ? [] : NOTE_TOOLS),
+                    ...(repairing ||
+                    previewRepairBlock ||
+                    !needsNoteTools(
+                      task,
+                      body.content,
+                      Boolean(snapshot.elements.length),
+                    )
+                      ? []
+                      : NOTE_TOOLS),
                     ...(editing
                       ? APP_SOURCE_TOOLS.filter(
                           (tool) =>
                             (!inRepair ||
                               tool.function.name !== "search_app_source") &&
+                            (!readStalled ||
+                              tool.function.name !== "read_app_source") &&
                             (tool.function.name !== "edit_app_source" ||
-                              canEdit),
+                              (canEdit && (task !== "chat" || inRepair))),
                         )
                       : []),
                   ],
@@ -1223,6 +1448,7 @@ export const createChatService = async (
                 typeof delta.reasoning_content === "string" &&
                 delta.reasoning_content
               ) {
+                reasoning += delta.reasoning_content;
                 assistant.reasoning =
                   (assistant.reasoning || "") + delta.reasoning_content;
                 dirty = true;
@@ -1264,7 +1490,7 @@ export const createChatService = async (
                   call.function.arguments += tool.function.arguments;
                 }
                 if (
-                  call.function.arguments.length > 16000 ||
+                  call.function.arguments.length > 131072 ||
                   call.function.name.length > 100
                 ) {
                   throw new Error("工具参数过大");
@@ -1279,6 +1505,28 @@ export const createChatService = async (
           await flushHtml();
           if (abort.signal.aborted) {
             throw abort.signal.reason;
+          }
+          if (
+            finish === "length" &&
+            currentHtml &&
+            !editingMode &&
+            continuations < 2
+          ) {
+            toolBudget.assertAvailable();
+            continuations++;
+            protocolRecovery = true;
+            const draft = htmlDrafts.get(currentHtml.ref.artifactId)!;
+            messages.push({
+              role: "assistant",
+              content: `\`\`\`html\n${draft.source}`,
+            });
+            messages.push({
+              role: "system",
+              content:
+                "源码输出因单次长度限制中断。继续刚才HTML的下一个字符，不重复任何已有源码，不重新打开html围栏；补全后用结束围栏关闭。已有界面和输入保持在同一实例中。先完成核心逻辑，不增加额外装饰。",
+            });
+            appendBlock("text", "正在自动补全尚未完成的应用…\n");
+            continue;
           }
           if (tools.size) {
             const uniqueCalls = new Map<
@@ -1309,10 +1557,12 @@ export const createChatService = async (
               // Source lives in the scoped draft; do not resend the entire HTML as prose.
               content: assistant.content.slice(responseTextStart) || null,
               tool_calls: toolCalls,
+              ...(thinking ? { reasoning_content: reasoning } : {}),
             });
             let commandFailure = "";
             let successfulCalls = 0;
             let failedCalls = 0;
+            let successfulMutation = false;
             for (const tool of toolCalls) {
               const signature = JSON.stringify(tool.function);
               const executed = executedTools.get(tool.id);
@@ -1330,13 +1580,11 @@ export const createChatService = async (
               const repairForCall = repairing;
               if (repairForCall && tool.function.name === "edit_app_source") {
                 const progress = repairForCall.block.repair!;
-                if (progress.attempts >= 2) {
+                if (progress.attempts >= HTML_SYNTAX_REPAIR_LIMIT) {
                   throw new Error(
-                    "自动修复已达2次，草稿已保留，请手动继续修正",
+                    `自动修复已达${HTML_SYNTAX_REPAIR_LIMIT}次，草稿已保留，请手动继续修正`,
                   );
                 }
-                progress.attempts++;
-                publishBlock(repairForCall.block);
               }
               const activity: ChatActivity = {
                 summary: "",
@@ -1379,6 +1627,31 @@ export const createChatService = async (
                   }
                   validateSourceArguments(tool.function.name, args);
                   if (tool.function.name !== "edit_app_source") {
+                    const baseline = args.revision === "baseline";
+                    if (baseline && !htmlBase) {
+                      throw new SourceToolError(
+                        400,
+                        "新建任务没有修改前源码，请读取current候选",
+                        "invalid_request",
+                      );
+                    }
+                    const inspected = baseline ? htmlBase! : editing;
+                    if (
+                      readProgress.blocked(
+                        tool.function.name,
+                        sourceHash(inspected.source),
+                        args,
+                      )
+                    ) {
+                      throw new SourceToolError(
+                        409,
+                        "同一源码页已连续成功读取三次，重复读取不会推进任务。请使用已有sourceHash与源码调用edit_app_source，或搜索不同区域；未改变正式组件，也不重新计算正常轮次额度。",
+                        "protocol",
+                      );
+                    }
+                    if (baseline) {
+                      readHash = null;
+                    }
                     const start = args.startLine ?? 1;
                     const count = args.lineCount ?? 60;
                     const column = args.startColumn ?? 0;
@@ -1391,7 +1664,7 @@ export const createChatService = async (
                       !Number.isSafeInteger(column) ||
                       column < 0 ||
                       column >
-                        (editing.source.split("\n")[start - 1]?.length ?? 0)
+                        (inspected.source.split("\n")[start - 1]?.length ?? 0)
                     ) {
                       throw new SourceToolError(
                         400,
@@ -1401,7 +1674,7 @@ export const createChatService = async (
                     }
                     const available = Math.min(
                       6500,
-                      24000 - readChars - 700,
+                      AGENT_SOURCE_READ_LIMIT - readChars - 700,
                       contextLimit - JSON.stringify(messages).length - 1000,
                     );
                     if (available < 256) {
@@ -1413,23 +1686,35 @@ export const createChatService = async (
                     }
                     const page =
                       tool.function.name === "search_app_source"
-                        ? searchSource(editing.source, args, available)
+                        ? searchSource(inspected.source, args, available)
                         : readSourcePage(
-                            editing.source,
+                            inspected.source,
                             start,
                             count,
                             available,
                             column,
                           );
-                    if (tool.function.name === "read_app_source") {
+                    if (tool.function.name === "read_app_source" && !baseline) {
                       readHash = sourceHash(editing.source);
+                      const sourcePage = page as ReturnType<
+                        typeof readSourcePage
+                      >;
+                      readCoverage.record(editing.source, sourcePage);
                     }
                     result = {
-                      sourceHash: sourceHash(editing.source),
-                      version: editing.version,
+                      sourceHash: sourceHash(inspected.source),
+                      version: inspected.version,
+                      revision: baseline ? "baseline" : "current",
+                      ...(baseline ? { readonly: true } : {}),
                       ...page,
                     };
+                    readProgress.record(
+                      tool.function.name,
+                      sourceHash(inspected.source),
+                      args,
+                    );
                   } else {
+                    readProgress.editing();
                     if (!readHash || readHash !== args.sourceHash) {
                       throw new SourceToolError(
                         409,
@@ -1437,12 +1722,41 @@ export const createChatService = async (
                         "version_conflict",
                       );
                     }
+                    for (const edit of args.edits) {
+                      if (edit.startLine !== undefined) {
+                        const unread = readCoverage.firstUnread(
+                          readHash,
+                          edit.startLine,
+                          edit.endLine,
+                        );
+                        if (unread !== null) {
+                          throw new SourceToolError(
+                            409,
+                            `行范围包含尚未完整读取的源码：从第${unread}行起至第${edit.endLine}行。请read_app_source读取这些完整行（注意nextColumn分页），再提交修改`,
+                            "version_conflict",
+                          );
+                        }
+                      }
+                    }
                     const source = replaceSource(
                       editing.source,
                       args.sourceHash,
                       args.edits,
                     );
+                    if (source === editing.source) {
+                      throw new SourceToolError(
+                        422,
+                        "替换没有改变任何源码，请提交实现用户要求的实际修改",
+                        "replacement",
+                      );
+                    }
                     failedSource = source;
+                    if (repairForCall) {
+                      // Invalid parameters, stale hashes and unmatched text are
+                      // tool retries, not submitted syntax-repair candidates.
+                      repairForCall.block.repair!.attempts++;
+                      publishBlock(repairForCall.block);
+                    }
                     validateAppSource(source);
                     const canvasTarget = workspace?.kind === "element";
                     const id =
@@ -1473,14 +1787,15 @@ export const createChatService = async (
                       source,
                       sourceHash: sourceHash(source),
                       parentVersion: editing.version,
-                      editBase: htmlBase
-                        ? turnWorkspace?.base ||
-                          htmlBase.editBase || {
-                            kind: "html",
-                            artifactId: htmlBase.artifactId,
-                            version: htmlBase.version,
-                          }
-                        : undefined,
+                      editBase:
+                        htmlBase && task !== "create"
+                          ? turnWorkspace?.base ||
+                            htmlBase.editBase || {
+                              kind: "html",
+                              artifactId: htmlBase.artifactId,
+                              version: htmlBase.version,
+                            }
+                          : undefined,
                       revision: 0,
                       createdAt: Date.now(),
                       complete: true,
@@ -1493,7 +1808,9 @@ export const createChatService = async (
                       changes: repairForCall
                         ? sourceDifference(repairForCall.baseSource, source)
                         : sourceDifference(
-                            originalSource || editing.source,
+                            task === "create"
+                              ? editing.source
+                              : originalSource || editing.source,
                             source,
                           ),
                       ...(repairForCall
@@ -1518,7 +1835,10 @@ export const createChatService = async (
                     editing = candidate;
                     readHash = null;
                     const block: Extract<ChatBlock, { type: "html" }> = {
-                      id: repairForCall?.block.id || randomUUID(),
+                      id:
+                        repairForCall?.block.id ||
+                        previewRepairBlock?.id ||
+                        randomUUID(),
                       type: "html",
                       ref: { kind: "html", artifactId: id, version },
                       complete: true,
@@ -1534,12 +1854,18 @@ export const createChatService = async (
                         source: undefined,
                       });
                       repairing = undefined;
+                    } else if (previewRepairBlock) {
+                      Object.assign(previewRepairBlock, block, {
+                        source: undefined,
+                        error: undefined,
+                      });
                     } else {
                       assistant.blocks!.push(block);
                     }
+                    previews.expect(id, version);
                     await persist();
                     lastCandidate = candidate;
-                    if (turnWorkspace) {
+                    if (turnWorkspace && task !== "create") {
                       turnWorkspace.head = {
                         kind: "html",
                         artifactId: id,
@@ -1736,6 +2062,9 @@ export const createChatService = async (
               });
               executedTools.set(tool.id, { signature, text });
               activity.status = result.error ? "failed" : "complete";
+              if (mutationResult && !result.error) {
+                successfulMutation = true;
+              }
               if (result.error) {
                 failedCalls++;
               } else {
@@ -1771,12 +2100,14 @@ export const createChatService = async (
                 tool.function.name === "create_widget_draft" ||
                 tool.function.name === "revise_widget_draft";
               if (tool.function.name === "read_app_source" && !result.error) {
-                activity.summary = `已读取源码第 ${result.startLine}–${result.endLine} 行`;
+                activity.summary = `已读取${
+                  result.revision === "baseline" ? "修改前" : ""
+                }源码第 ${result.startLine}–${result.endLine} 行`;
               }
               if (tool.function.name === "search_app_source" && !result.error) {
-                activity.summary = `已搜索当前源码，返回 ${
-                  (result.matches as unknown[]).length
-                } 处匹配`;
+                activity.summary = `已搜索${
+                  result.revision === "baseline" ? "修改前" : "当前"
+                }源码，返回 ${(result.matches as unknown[]).length} 处匹配`;
               }
               if (mutationResult && !result.error) {
                 activity.summary = "修改候选已保存，等待确认";
@@ -1807,6 +2138,8 @@ export const createChatService = async (
                   status: activity.status,
                   errorCode: activity.errorCode,
                   targetVersion: editing?.version,
+                  readRevision: mutationResult ? undefined : result.revision,
+                  readVersion: mutationResult ? undefined : result.version,
                   contextChars: JSON.stringify(messages).length,
                   contextLimit,
                   readChars,
@@ -1819,9 +2152,29 @@ export const createChatService = async (
               dirty = true;
             }
             toolBudget.record(successfulCalls, failedCalls, recoveryRound);
-            if (repairing && repairing.block.repair!.attempts >= 2) {
+            if (
+              previewRepairBlock &&
+              successfulMutation &&
+              !failedCalls &&
+              !repairing
+            ) {
+              const review = await reviewPreview(responseTextStart);
+              if (review === "retry") {
+                continue;
+              }
+              if (review === "passed") {
+                completed = true;
+                break;
+              }
+            }
+            if (
+              repairing &&
+              repairing.block.repair!.attempts >= HTML_SYNTAX_REPAIR_LIMIT
+            ) {
               throw new Error(
-                `自动修复已达2次，草稿已保留：${repairing.block.repair!.error}`,
+                `自动修复已达${HTML_SYNTAX_REPAIR_LIMIT}次，草稿已保留：${
+                  repairing.block.repair!.error
+                }`,
               );
             }
             if (
@@ -1831,8 +2184,12 @@ export const createChatService = async (
               activateRepair();
             } else if (
               !repairing &&
+              !previewRepairBlock &&
               repairJobs.some((job) => job.block.repair?.status === "succeeded")
             ) {
+              if ((await reviewPreview(responseTextStart)) === "retry") {
+                continue;
+              }
               completed = true;
               break;
             }
@@ -1910,6 +2267,56 @@ export const createChatService = async (
               });
               activateRepair();
               continue;
+            }
+            const realOutput =
+              task === "edit"
+                ? assistant.activities!.some(
+                    (a) =>
+                      a.name === "edit_app_source" && a.status === "complete",
+                  )
+                : assistant.blocks!.some((b) => b.type === "html" && b.saved);
+            if (
+              realOutput &&
+              (await reviewPreview(responseTextStart)) === "retry"
+            ) {
+              continue;
+            }
+            if (!repairing && completion.recover(realOutput)) {
+              toolBudget.assertAvailable();
+              protocolRecovery = true;
+              messages.push({
+                role: "assistant",
+                content:
+                  assistant.content.slice(responseTextStart).slice(-3000) ||
+                  "本次未产生有效作品。",
+              });
+              messages.push({
+                role: "system",
+                content:
+                  task === "edit"
+                    ? `执行检查：用户明确要求修改，但没有成功保存候选。不要只说修改完成，不要重新输出HTML。必须通过真实tool_calls完成。当前sourceHash=${
+                        editing ? sourceHash(editing.source) : "无"
+                      }。${
+                        readHash &&
+                        editing &&
+                        readHash === sourceHash(editing.source)
+                          ? "当前版本已读，现在直接调用edit_app_source提交最小替换。"
+                          : "先search_app_source定位或read_app_source读取，再edit_app_source。"
+                      }已保存的未应用整份HTML不是修改结果。`
+                    : "执行检查：用户要求交互应用，但没有完整、可保存的html作品。现在直接输出一个完整html围栏应用，不要描述计划，不要虚构作品引用。复杂内容以数据数组和通用渲染组织，先做完整可用的核心，使用受支持的本地库。",
+              });
+              appendBlock(
+                "text",
+                task === "edit"
+                  ? "正在继续完成源码修改…\n"
+                  : "正在继续构建应用…\n",
+              );
+              continue;
+            }
+            if (task !== "chat" && !realOutput) {
+              throw new Error(
+                "自动恢复后仍未产生有效结果；原组件未改变，已保留草稿与诊断",
+              );
             }
             completed = true;
             break;
@@ -2079,6 +2486,10 @@ export const createChatService = async (
             protocolCorrections,
             normalToolRounds: toolBudget.normalRounds,
             recoveryToolRounds: toolBudget.recoveryRounds,
+            completionRecoveries: completion.attempts,
+            previewCorrections,
+            continuations,
+            task,
             workspaceGeneration: turnWorkspace?.generation,
             candidateVersion: turnWorkspace?.head?.version,
             protocol: req.headers["x-chat-protocol"] || "legacy",

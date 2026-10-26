@@ -186,7 +186,7 @@ describe("canonical HTML source", () => {
     expect(() => validateAppSource("<script>let x=1")).toThrow(/闭合|未完整/);
     expect(() =>
       validateAppSource('<script src="https://example.com/a.js"></script>'),
-    ).toThrow("自包含");
+    ).toThrow("固定版本库清单");
   });
   it("publishes HTML independently, protects immutable versions, and detects missing or corrupt sources", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "html-source-"));

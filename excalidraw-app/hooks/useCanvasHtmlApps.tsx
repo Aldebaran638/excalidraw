@@ -36,6 +36,9 @@ export type HtmlRegion = {
   height: number;
 };
 export type HtmlChatHost = {
+  preview?: (
+    id: string,
+  ) => import("../data/appPreview").AppPreviewReport | null;
   elements: () => { id: string; title: string }[];
   read: (id: string) => CanvasHtmlApp | null;
   place: (
@@ -194,6 +197,7 @@ export const useCanvasHtmlApps = ({
     state: structuredClone(state),
   });
   const host: HtmlChatHost = {
+    preview: (id) => runtimes.current.get(id)?.preview?.() || null,
     elements: () =>
       (api?.getSceneElements() || []).flatMap((e) => {
         const app = readCanvasHtmlApp(e.customData?.htmlApp);
@@ -400,12 +404,17 @@ export const useCanvasHtmlApps = ({
     });
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && (pending.current || regionRef.current)) {
+        // Import starts from the sidebar, whose keyboard boundary deliberately
+        // stops bubbling canvas shortcuts. Cancel this temporary canvas tool
+        // before that boundary without closing the sidebar or changing history.
+        event.preventDefault();
+        event.stopPropagation();
         cancel();
       }
     };
-    ownerWindow.addEventListener("keydown", escape);
+    ownerWindow.addEventListener("keydown", escape, true);
     return () => {
-      ownerWindow.removeEventListener("keydown", escape);
+      ownerWindow.removeEventListener("keydown", escape, true);
       cleanup?.();
       unsub();
     };
@@ -515,6 +524,8 @@ export const useCanvasHtmlApps = ({
                   htmlApp: {
                     ...app,
                     state: runtimes.current.get(e.id)?.state() || app.state,
+                    runtimePreview:
+                      runtimes.current.get(e.id)?.preview?.() || undefined,
                   },
                 },
               }

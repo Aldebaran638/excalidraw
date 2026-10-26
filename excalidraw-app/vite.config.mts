@@ -12,6 +12,7 @@ import Sitemap from "vite-plugin-sitemap";
 import { woff2BrowserPlugin } from "../scripts/woff2/woff2-vite-plugins";
 
 import { repositoryNotesPlugin } from "./vite-notes-plugin";
+import { appLibrariesPlugin } from "../scripts/app-libraries.mjs";
 export default defineConfig(({ mode }) => {
   // To load .env variables
   const envVars = loadEnv(mode, `../`);
@@ -146,6 +147,7 @@ export default defineConfig(({ mode }) => {
       assetsInlineLimit: 0,
     },
     plugins: [
+      appLibrariesPlugin(),
       repositoryNotesPlugin(),
       Sitemap({
         hostname: "https://excalidraw.com",

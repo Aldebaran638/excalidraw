@@ -12,6 +12,7 @@ import {
 import { applyAppUpdate } from "./appUpdate";
 
 import type { HtmlArtifact, HtmlState, HtmlRef } from "./chatHtml";
+import type { AppPreviewReport } from "./appPreview";
 import type { HtmlChatHost } from "../hooks/useCanvasHtmlApps";
 
 import type {
@@ -103,6 +104,20 @@ export class NoteChatController {
   public widgetHost?: ChatWidgetHost;
   public htmlHost?: HtmlChatHost;
   private htmlTrials = new Map<string, HtmlState>();
+  private htmlInspections = new Map<string, () => AppPreviewReport | null>();
+  setHtmlInspection(
+    noteId: string,
+    sessionId: string,
+    ref: HtmlRef,
+    inspect: (() => AppPreviewReport | null) | null,
+  ) {
+    const key = `${noteId}/${sessionId}/${ref.artifactId}/${ref.version}`;
+    if (inspect) {
+      this.htmlInspections.set(key, inspect);
+    } else {
+      this.htmlInspections.delete(key);
+    }
+  }
   private workspaceWrites = new Map<string, Promise<void>>();
   setHtmlTrial(
     noteId: string,
@@ -992,6 +1007,74 @@ export class NoteChatController {
         ? this.state.artifacts[this.artifactKey(noteId, id, workspace)]
         : undefined;
     const turnId = randomId();
+    const inspectionRef =
+      currentSession.appWorkspace?.head ||
+      (workspace?.kind === "html" ? workspace : undefined);
+    const inspect =
+      inspectionRef &&
+      this.htmlInspections.get(
+        `${noteId}/${id}/${inspectionRef.artifactId}/${inspectionRef.version}`,
+      );
+    const probe =
+      inspect ||
+      (workspace?.kind === "element" && this.htmlHost?.preview
+        ? () => this.htmlHost!.preview!(workspace.elementId)
+        : undefined);
+    // The canvas snapshot above remains frozen. Wait briefly for initial or
+    // post-input diagnostics, never for another model call or another note.
+    for (let attempt = 0; probe && !probe() && attempt < 30; attempt++) {
+      if (
+        this.state.context.noteId !== noteId ||
+        this.state.context.documentSession !== documentSession
+      ) {
+        return;
+      }
+      await new Promise<void>((resolve) =>
+        this.ownerWindow.setTimeout(resolve, 50),
+      );
+    }
+    if (
+      this.active.has(key) ||
+      this.state.context.noteId !== noteId ||
+      this.state.context.documentSession !== documentSession
+    ) {
+      return;
+    }
+    const selectionKey = (value: ChatWorkspace | undefined) =>
+      value?.kind === "element"
+        ? `element/${value.elementId}`
+        : value
+        ? `${value.kind}/${value.artifactId}/${value.version}`
+        : "";
+    if (
+      selectionKey(this.state.ui[noteId]?.workspaces?.[id]) !==
+        selectionKey(workspace) ||
+      this.state.sessions[key]?.appWorkspace?.generation !==
+        currentSession.appWorkspace?.generation
+    ) {
+      return;
+    }
+    if (workspace?.kind === "element" && this.htmlHost?.preview) {
+      const frozen = snapshot.elements.find(
+        (element) => element.id === workspace.elementId,
+      )?.customData as
+        | {
+            htmlApp?: {
+              sourceHash: string;
+              runtimePreview?: AppPreviewReport | null;
+            };
+          }
+        | undefined;
+      if (
+        frozen?.htmlApp &&
+        frozen.htmlApp.sourceHash ===
+          this.htmlHost.read(workspace.elementId)?.sourceHash
+      ) {
+        frozen.htmlApp.runtimePreview = this.htmlHost.preview(
+          workspace.elementId,
+        );
+      }
+    }
     const abort = new this.ownerWindow.AbortController();
     this.active.set(key, { turnId, abort });
     this.state.errors = { ...this.state.errors, [key]: "" };
@@ -1012,6 +1095,16 @@ export class NoteChatController {
             thinking: this.state.ui[noteId]?.thinking === true,
             snapshot,
             workspace,
+            workspacePreview:
+              inspect && inspectionRef
+                ? {
+                    ref: {
+                      artifactId: inspectionRef.artifactId,
+                      version: inspectionRef.version,
+                    },
+                    report: inspect(),
+                  }
+                : undefined,
             workspaceGeneration: currentSession.appWorkspace?.generation,
             appIntent: workspace ? "edit" : "create",
             recovery: this.state.ui[noteId]?.recoveries?.[id],
@@ -1188,7 +1281,12 @@ export class NoteChatController {
           }
           this.emit(true);
         }
-        if (event.type === "start" && !retry && !replacement) {
+        if (
+          event.type === "start" &&
+          !retry &&
+          !replacement &&
+          this.state.ui[noteId]?.drafts[id]?.trim() === content.trim()
+        ) {
           this.setDraft(noteId, id, "");
         }
         const current = this.state.sessions[key];

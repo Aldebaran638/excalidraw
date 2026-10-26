@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { NoteChatController } from "../data/noteChats";
+import { CHAT_HEADERS } from "../data/clientProtocol";
 
 import type { ChatEvent, ChatSession } from "../data/chatTypes";
 
@@ -30,6 +31,52 @@ const browser = (fetch: typeof globalThis.fetch) => {
       clearTimeout(id),
   } as unknown as Window & typeof globalThis;
 };
+it("preserves a new input draft typed before the previous send is accepted", async () => {
+  const fetch = vi.fn(async (url, init) => {
+    if (String(url).endsWith("/turns")) {
+      const body = JSON.parse(String(init?.body));
+      expect(body.content).toBe("第一条问题");
+      controller.setDraft(noteId, session.id, "发送等待期间输入的下一条");
+      return new Response(
+        [
+          {
+            type: "start",
+            noteId,
+            sessionId: session.id,
+            turnId: body.turnId,
+            session,
+          },
+          {
+            type: "done",
+            noteId,
+            sessionId: session.id,
+            turnId: body.turnId,
+            session: { ...session, revision: 1 },
+          },
+        ]
+          .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+          .join(""),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    }
+    return String(url).endsWith(`/chats/${session.id}`)
+      ? json(session)
+      : json({ sessions: [session] });
+  }) as typeof globalThis.fetch;
+  const controller = new NoteChatController(
+    browser(fetch),
+    async () => ({ noteId, name: "a.excalidraw" }),
+    () => ({ capturedAt: 1, elements: [] }),
+  );
+  controller.bind({ noteId, name: "a.excalidraw", documentSession: 1 });
+  await controller.select(noteId, session.id);
+  controller.setDraft(noteId, session.id, "第一条问题");
+  await controller.send(noteId, session.id);
+  expect(controller.getState().ui[noteId].drafts[session.id]).toBe(
+    "发送等待期间输入的下一条",
+  );
+  controller.dispose();
+});
 it("does not replace a newer session with a late workspace PATCH response", () => {
   const controller = new NoteChatController(
     browser(vi.fn() as typeof fetch),
@@ -170,10 +217,9 @@ describe("application-owned chat controller", () => {
       "未发送的输入",
     );
     expect(ownerWindow.location.reload).not.toHaveBeenCalled();
-    expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({
-      "X-Chat-Protocol": "4",
-      "X-Chat-Capabilities": "html-blocks",
-    });
+    expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject(
+      CHAT_HEADERS,
+    );
     controller.dispose();
   });
   it("remembers the thinking preference per note across refresh", () => {

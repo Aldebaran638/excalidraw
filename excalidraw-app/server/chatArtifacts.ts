@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -9,6 +8,7 @@ import {
 import { validId } from "../data/noteIdentity";
 
 import { ChatError, ChatStore } from "./chatStore";
+import { readUtf8 } from "./fileIO";
 
 import type { ChatWidgetData, ChatWidgetVersion } from "../data/chatWidgets";
 import type { WidgetState } from "../../packages/interactive-widgets/types";
@@ -62,9 +62,7 @@ export class ChatArtifactStore {
     const folder = this.folder(noteId, sessionId, artifactId);
     let meta: Meta;
     try {
-      meta = JSON.parse(
-        await fs.readFile(path.join(folder, "meta.json"), "utf8"),
-      );
+      meta = JSON.parse(await readUtf8(path.join(folder, "meta.json")));
     } catch {
       throw new ChatError(404, "聊天作品不存在或无法读取");
     }
@@ -77,7 +75,7 @@ export class ChatArtifactStore {
     }
     try {
       const data: ChatWidgetVersion = JSON.parse(
-        await fs.readFile(path.join(folder, `v${selected}.json`), "utf8"),
+        await readUtf8(path.join(folder, `v${selected}.json`)),
       );
       if (
         data.noteId !== noteId ||
@@ -136,9 +134,7 @@ export class ChatArtifactStore {
       }
       let meta: Meta = { versions: [] };
       try {
-        meta = JSON.parse(
-          await fs.readFile(path.join(folder, "meta.json"), "utf8"),
-        );
+        meta = JSON.parse(await readUtf8(path.join(folder, "meta.json")));
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
           throw e;
