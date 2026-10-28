@@ -233,6 +233,276 @@ describe("chat tool round limits", () => {
 });
 
 describe("agent automatic task completion", () => {
+  it("continues the same candidate when the next turn clarifies the previous edit", async () => {
+    const f = await fixture((request, index) => {
+      const step = index % 3;
+      const names = request.tools.map((tool: any) => tool.function.name);
+      if (!step) {
+        expect(names).not.toContain("edit_app_source");
+        return call("read_app_source", {});
+      }
+      if (step === 1) {
+        expect(names).toContain("edit_app_source");
+        const current = JSON.parse(request.messages.at(-1).content);
+        if (index > 2) {
+          expect(current.source).toContain("第一候选");
+        }
+        return call("edit_app_source", {
+          sourceHash: current.sourceHash,
+          edits: [
+            {
+              oldText: index < 3 ? "原版" : "说明",
+              newText: index < 3 ? "第一候选" : "RR与RC的业务场景对照",
+            },
+          ],
+        });
+      }
+      return stream({ content: "候选已保存，等待确认。" });
+    });
+    await f.select();
+    await f.send();
+    const result = await f.send({
+      content:
+        "你理解错了，我说的实际使用例子指的是，一般什么业务场景使用RR，什么使用RC",
+    });
+    expect(result.message?.status).toBe("complete");
+    expect(result.message?.agentTask).toMatchObject({
+      kind: "edit",
+      target: { kind: "html", artifactId: f.app.artifactId },
+    });
+    expect(f.requests).toHaveLength(6);
+    const head = await f.html.readApp(f.noteId, f.app.artifactId, 3);
+    expect(head.source).toContain("第一候选");
+    expect(head.source).toContain("RR与RC的业务场景对照");
+    expect((await f.html.readApp(f.noteId, f.app.artifactId, 1)).source).toBe(
+      source,
+    );
+  }, 15000);
+  it("recovers the prior edit context when retrying a legacy misclassified clarification", async () => {
+    const f = await fixture((request, index) => {
+      if (!index) {
+        return call("read_app_source", {});
+      }
+      if (index === 1) {
+        expect(
+          request.tools.some((t: any) => t.function.name === "edit_app_source"),
+        ).toBe(true);
+        return call("edit_app_source", {
+          sourceHash: JSON.parse(request.messages.at(-1).content).sourceHash,
+          edits: [{ oldText: "说明", newText: "业务场景" }],
+        });
+      }
+      return stream({ content: "已保存候选" });
+    });
+    const retryId = randomUUID();
+    const clarification =
+      "你理解错了，我说的是一般什么业务场景使用RR，什么使用RC";
+    const previous = await f.store.update(
+      f.noteId,
+      f.session().id,
+      (current) => {
+        current.messages = [
+          {
+            id: randomUUID(),
+            turnId: randomUUID(),
+            role: "assistant",
+            content: "候选已保存",
+            createdAt: 1,
+            status: "complete",
+            blocks: [
+              {
+                id: "old",
+                type: "html",
+                ref: { kind: "html", artifactId: f.app.artifactId, version: 1 },
+                saved: true,
+                complete: true,
+              },
+            ],
+          },
+          {
+            id: retryId,
+            turnId: randomUUID(),
+            role: "user",
+            content: clarification,
+            createdAt: 2,
+            status: "complete",
+          },
+          {
+            id: randomUUID(),
+            turnId: randomUUID(),
+            role: "assistant",
+            content: fake,
+            createdAt: 3,
+            status: "complete",
+            blocks: [
+              { id: "fake", type: "protocol", text: fake, status: "failed" },
+            ],
+          },
+        ];
+      },
+    );
+    const result = await f.send({
+      content: clarification,
+      revision: previous.revision,
+      retryMessageId: retryId,
+    });
+    expect(result.message?.status).toBe("complete");
+    expect(result.message?.agentTask?.kind).toBe("edit");
+    expect(f.session().messages.filter((m) => m.role === "user")).toHaveLength(
+      1,
+    );
+    expect(f.requests).toHaveLength(3);
+  }, 15000);
+  it("does not borrow a later edit task when editing an earlier question", async () => {
+    const f = await fixture(() => stream({ content: "只解释，不修改。" }));
+    const firstId = randomUUID();
+    const previous = await f.store.update(
+      f.noteId,
+      f.session().id,
+      (current) => {
+        current.messages = [
+          {
+            id: firstId,
+            turnId: randomUUID(),
+            role: "user",
+            content: "原始问题",
+            createdAt: 1,
+            status: "complete",
+          },
+          {
+            id: randomUUID(),
+            turnId: randomUUID(),
+            role: "assistant",
+            content: "已修改",
+            createdAt: 2,
+            status: "complete",
+            agentTask: {
+              kind: "edit",
+              target: { kind: "html", artifactId: f.app.artifactId },
+            },
+          },
+        ];
+      },
+    );
+    const result = await f.send({
+      content: "你理解错了，我说的是业务场景",
+      revision: previous.revision,
+      replaceMessageId: firstId,
+    });
+    expect(result.message?.agentTask?.kind).toBe("chat");
+    expect(f.requests).toHaveLength(1);
+    expect(f.session().previousVersions?.[0].messages).toHaveLength(2);
+  });
+  it("does not inherit modification intent after selecting another app", async () => {
+    const f = await fixture(() =>
+      stream({ content: "请明确要怎样修改这个新目标。" }),
+    );
+    const previous = await f.store.update(
+      f.noteId,
+      f.session().id,
+      (current) => {
+        current.messages = [
+          {
+            id: randomUUID(),
+            turnId: randomUUID(),
+            role: "assistant",
+            content: "已保存",
+            createdAt: 1,
+            status: "complete",
+            agentTask: {
+              kind: "edit",
+              target: { kind: "html", artifactId: "other-app" },
+            },
+          },
+        ];
+      },
+    );
+    const result = await f.send({
+      content: "你理解错了，我说的是业务场景",
+      revision: previous.revision,
+    });
+    expect(result.message?.agentTask?.kind).toBe("chat");
+    expect(f.requests).toHaveLength(1);
+    expect(result.message?.blocks?.some((b) => b.type === "html")).toBe(false);
+  });
+  it("keeps read-only tools and correction guidance consistent, and reports unexecuted calls as failed", async () => {
+    const f = await fixture((request, index) => {
+      expect(
+        request.tools.some(
+          (tool: any) => tool.function.name === "edit_app_source",
+        ),
+      ).toBe(false);
+      if (!index) {
+        return call("read_app_source", {});
+      }
+      if (index === 2) {
+        expect(request.messages.at(-1).content).toContain("只读问答");
+        expect(request.messages.at(-1).content).not.toContain(
+          "再真实调用 edit_app_source",
+        );
+      }
+      return stream({ content: fake });
+    });
+    const result = await f.send({ content: "不要修改，只解释当前应用" });
+    expect(f.requests).toHaveLength(3);
+    expect(result.message?.status).toBe("failed");
+    expect(result.message?.error).toContain("未通过真实工具");
+    expect(result.events.some((e) => e.type === "error")).toBe(true);
+    expect(result.events.at(-1)?.message.status).toBe("failed");
+    expect(
+      result.message?.blocks?.some((b) => b.type === "html" && b.saved),
+    ).toBe(false);
+  });
+  it("rejects a real edit call that was not authorized for a read-only question", async () => {
+    const f = await fixture((request, index) => {
+      if (!index) {
+        return call("read_app_source", {});
+      }
+      if (index === 1) {
+        expect(
+          request.tools.some((t: any) => t.function.name === "edit_app_source"),
+        ).toBe(false);
+        return call("edit_app_source", {
+          sourceHash: JSON.parse(request.messages.at(-1).content).sourceHash,
+          edits: [{ oldText: "原版", newText: "不该修改" }],
+        });
+      }
+      expect(JSON.parse(request.messages.at(-1).content).errorCode).toBe(
+        "protocol",
+      );
+      return stream({ content: "本轮只读，原组件未修改。" });
+    });
+    const result = await f.send({ content: "只解释，不要修改" });
+    expect(result.message?.activities?.at(-1)).toMatchObject({
+      name: "edit_app_source",
+      status: "failed",
+      errorCode: "protocol",
+    });
+    expect(result.message?.blocks?.some((b) => b.type === "html")).toBe(false);
+    expect((await f.html.readApp(f.noteId, f.app.artifactId, 1)).source).toBe(
+      source,
+    );
+  });
+  it("does not suggest unavailable edits when read-only source reading stalls", async () => {
+    const f = await fixture((request, index) => {
+      expect(
+        request.tools.some(
+          (tool: any) => tool.function.name === "edit_app_source",
+        ),
+      ).toBe(false);
+      if (index < 4) {
+        return call("read_app_source", {});
+      }
+      const result = JSON.parse(request.messages.at(-1).content);
+      expect(result.error).toContain("本轮只读");
+      expect(result.error).not.toContain("调用edit_app_source");
+      return stream({ content: "根据已读源码说明。" });
+    });
+    const result = await f.send({ content: "只解释当前应用" });
+    expect(result.message?.status).toBe("complete");
+    expect(result.message?.activities?.at(-1)?.status).toBe("failed");
+    expect(f.requests).toHaveLength(5);
+  });
   it("does not finish after a read when syntax repair is followed by preview repair", async () => {
     const sent = new Set<number>();
     const f = await fixture((request, index) => {
@@ -807,6 +1077,8 @@ describe("authoritative editing and workspaces", () => {
     await f.select();
     const { message } = await f.send();
     expect(f.requests).toHaveLength(4);
+    expect(message?.status).toBe("failed");
+    expect(message?.error).toContain("部分修改候选已保存");
     expect(message?.blocks?.at(-1)).toMatchObject({
       text: expect.stringContaining("部分操作完成"),
     });

@@ -183,11 +183,16 @@ describe("automatic syntax repair", () => {
 
   it("repairs a failed edit on its draft, and includes the intended edit in the baseline diff", async () => {
     const original = good.replace("实验室", "原始实验室");
-    const f = await fixture((_request, index) => {
+    const f = await fixture((request, index) => {
       if (index === 0 || index === 2) {
         return chunk(tool("read_app_source", {}));
       }
       if (index === 1) {
+        expect(
+          request.tools.some(
+            (tool: any) => tool.function.name === "edit_app_source",
+          ),
+        ).toBe(true);
         return chunk(
           replace(original, [
             { oldText: "原始实验室", newText: "新实验室" },
@@ -219,6 +224,7 @@ describe("automatic syntax repair", () => {
       createdAt: Date.now(),
     });
     const { message } = await f.send({
+      content: "修改当前实验室的标题",
       workspace: { kind: "html", artifactId: app.artifactId, version: 1 },
     });
     expect(message.status).toBe("complete");

@@ -1,8 +1,62 @@
-export type AgentTask = "chat" | "create" | "edit";
+import type {
+  AppTaskTarget,
+  ChatAgentTask,
+  ChatMessage,
+} from "../data/chatTypes";
+
+export type AgentTask = ChatAgentTask["kind"];
+
+/** Only the immediately preceding turn on this exact app can authorize a
+ * corrective follow-up. Older files use real saved outputs, never prose. */
+export function followsAppTask(
+  history: readonly ChatMessage[],
+  target?: AppTaskTarget,
+) {
+  const previous = history.at(-1);
+  if (!target || previous?.role !== "assistant") {
+    return false;
+  }
+  if (previous.agentTask) {
+    if (previous.agentTask.kind === "chat") {
+      return false;
+    }
+    if (previous.agentTask.target) {
+      const prior = previous.agentTask.target;
+      return target.kind === "element"
+        ? prior.kind === "element" &&
+            prior.elementId === target.elementId &&
+            prior.appId === target.appId
+        : prior.kind === "html" && prior.artifactId === target.artifactId;
+    }
+  }
+  return Boolean(
+    previous.blocks?.some((block) =>
+      target.kind === "html"
+        ? block.type === "html" &&
+          block.saved &&
+          block.ref.artifactId === target.artifactId
+        : block.type === "edit_result" &&
+          block.application?.elementId === target.elementId &&
+          block.application.appId === target.appId &&
+          previous.activities?.some(
+            (activity) =>
+              activity.name === "edit_app_source" &&
+              activity.status === "complete",
+          ),
+    ),
+  );
+}
+
+export const permitsSourceEdit = (task: AgentTask, repairing: boolean) =>
+  task !== "chat" || repairing;
 
 /** Routing is deliberately conservative: a referenced app is not permission to
  * edit it when the user merely asks a question. No extra classification call. */
-export function agentTask(instruction: string, hasTarget: boolean): AgentTask {
+export function agentTask(
+  instruction: string,
+  hasTarget: boolean,
+  followsApp = false,
+): AgentTask {
   if (
     /^\s*(?:请|先|请先|请你)?(?:解释|介绍|讲解|讲一下|说明|分析|为什么|如何|怎么|explain\b|describe\b|why\b|how\b)/i.test(
       instruction,
@@ -14,7 +68,7 @@ export function agentTask(instruction: string, hasTarget: boolean): AgentTask {
     return "chat";
   }
   if (
-    /不要修改|不用修改|(?:不需要|无需|不用|不要)(?:生成|创建|新建)|只(?:需|要)?解释|仅解释|只读|do not (?:edit|change|generate|create)/i.test(
+    /(?:不需要|无需|不用|不要)(?:修改|改动|编辑|改代码|改源码|生成|创建|新建)|只(?:需要|需|要)?(?:解释|回答|讨论)|仅(?:解释|回答|讨论)|只读|do not (?:edit|change|generate|create)/i.test(
       instruction,
     )
   ) {
@@ -32,6 +86,18 @@ export function agentTask(instruction: string, hasTarget: boolean): AgentTask {
     return "create";
   }
   if (hasTarget && action.test(instruction)) {
+    return "edit";
+  }
+  if (
+    hasTarget &&
+    followsApp &&
+    /(?:你|您)?理解错了|(?:我|你|您)(?:说|想要?|要|指)的(?:是|不是)|我的意思是|不是这个(?:意思|效果)|不对[，,。]|不是.{0,40}(?:而是|是要)|\b(?:i meant|that's not what|you misunderstood|not what i (?:meant|wanted))\b/i.test(
+      instruction,
+    ) &&
+    !/[?？]\s*$|为什么|为何|如何理解|怎么理解|解释一下|是什么意思|是不是|是否/.test(
+      instruction,
+    )
+  ) {
     return "edit";
   }
   if (

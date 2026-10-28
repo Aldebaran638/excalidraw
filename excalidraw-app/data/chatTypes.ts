@@ -20,6 +20,13 @@ export type ChatActivity = {
   summary?: string;
   details?: string;
 };
+export type AppTaskTarget =
+  | { kind: "element"; elementId: string; appId: string }
+  | { kind: "html"; artifactId: string };
+export type ChatAgentTask = {
+  kind: "chat" | "create" | "edit";
+  target?: AppTaskTarget;
+};
 export type ChatMessage = {
   id: string;
   turnId: string;
@@ -33,6 +40,8 @@ export type ChatMessage = {
   activities?: ChatActivity[];
   blocks?: ChatBlock[];
   error?: string;
+  /** Server-derived routing context, never accepted from model prose. */
+  agentTask?: ChatAgentTask;
 };
 export type AppWorkspace = {
   generation: string;

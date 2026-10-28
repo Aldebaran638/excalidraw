@@ -6,6 +6,8 @@ import {
   agentTask,
   AgentCompletion,
   needsNoteTools,
+  followsAppTask,
+  permitsSourceEdit,
 } from "../server/agentPolicy";
 import { compactAgentContext } from "../server/agentContext";
 import { requestAgentStream } from "../server/agentTransport";
@@ -28,6 +30,8 @@ import { previewStateKey } from "../data/appPreview";
 import { readUtf8 } from "../server/fileIO";
 import { missingDomMeasurements } from "../server/agentDom";
 import { AgentReadProgress } from "../server/agentProgress";
+
+import type { ChatMessage } from "../data/chatTypes";
 
 it("does not mistake an initially selected first node for a broken explanation", async () => {
   const root = document.createElement("div");
@@ -175,6 +179,112 @@ describe("repository transient reads", () => {
 });
 
 describe("agent task and recovery policy", () => {
+  it("recognizes corrective follow-ups only in an app-task context, not ordinary questions", () => {
+    const clarification =
+      "你理解错了，我说的实际使用例子指的是，一般什么业务场景使用RR，什么使用RC";
+    expect(agentTask(clarification, true, true)).toBe("edit");
+    expect(agentTask(clarification, true, false)).toBe("chat");
+    expect(agentTask(clarification, false, true)).toBe("chat");
+    for (const question of [
+      "你理解错了，只回答什么业务场景使用RR，不要改代码",
+      "你理解错了，我说的是为什么要用RR？",
+      "为什么标题改成了蓝色？",
+      "如何添加一个新节点？",
+      "不要修改，仅解释组件代码",
+    ]) {
+      expect(agentTask(question, true, true)).toBe("chat");
+    }
+    expect(agentTask("我想要的是业务场景对照，不是两条SQL", true, true)).toBe(
+      "edit",
+    );
+    expect(
+      agentTask("I meant business scenarios, not SQL examples", true, true),
+    ).toBe("edit");
+    expect(agentTask("再生成一个TCP流程组件", true, true)).toBe("create");
+    expect(permitsSourceEdit("chat", false)).toBe(false);
+    expect(permitsSourceEdit("edit", false)).toBe(true);
+    expect(permitsSourceEdit("chat", true)).toBe(true);
+  });
+  it("binds follow-up intent to the last real app task, including legacy saved results", () => {
+    const target = {
+      kind: "element" as const,
+      elementId: "selected",
+      appId: "app",
+    };
+    const previous: ChatMessage = {
+      id: "answer",
+      turnId: "turn",
+      role: "assistant",
+      content: "已完成",
+      status: "complete",
+      createdAt: 1,
+      agentTask: { kind: "edit", target },
+    };
+    expect(followsAppTask([previous], target)).toBe(true);
+    expect(followsAppTask([previous], { ...target, elementId: "other" })).toBe(
+      false,
+    );
+    expect(
+      followsAppTask([previous], { ...target, appId: "new-instance" }),
+    ).toBe(false);
+    expect(followsAppTask([previous], undefined)).toBe(false);
+    expect(
+      followsAppTask(
+        [{ ...previous, agentTask: { kind: "chat", target } }],
+        target,
+      ),
+    ).toBe(false);
+    expect(
+      followsAppTask([previous, { ...previous, role: "user" }], target),
+    ).toBe(false);
+    const legacy: ChatMessage = {
+      ...previous,
+      agentTask: undefined,
+      blocks: [
+        {
+          id: "result",
+          type: "edit_result",
+          text: "候选已保存",
+          application: {
+            elementId: target.elementId,
+            appId: target.appId,
+            sourceHash: "hash",
+          },
+        },
+      ],
+    };
+    expect(followsAppTask([legacy], target)).toBe(false);
+    legacy.activities = [
+      {
+        id: "actual",
+        name: "edit_app_source",
+        status: "complete",
+        elementIds: [],
+        snapshotAt: 1,
+      },
+    ];
+    expect(followsAppTask([legacy], target)).toBe(true);
+    expect(
+      followsAppTask(
+        [{ ...previous, agentTask: undefined, content: "修改成功" }],
+        target,
+      ),
+    ).toBe(false);
+    const chatTarget = { kind: "html" as const, artifactId: "artifact" };
+    legacy.blocks = [
+      {
+        id: "saved",
+        type: "html",
+        ref: { kind: "html", artifactId: "artifact", version: 2 },
+        saved: true,
+        complete: true,
+      },
+    ];
+    expect(followsAppTask([legacy], chatTarget)).toBe(true);
+    expect(
+      followsAppTask([legacy], { ...chatTarget, artifactId: "unrelated" }),
+    ).toBe(false);
+  });
   it("combines actual long-line pages without authorizing unseen gaps or other revisions", () => {
     const source = `<p>${"中文🙂".repeat(200)}</p>\n<footer>done</footer>`;
     const coverage = new SourceReadCoverage();
