@@ -1,4 +1,5 @@
 .excalidraw .note-chat {
+  --note-chat-message-inset: 16px;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -79,6 +80,7 @@
     border-radius: 8px;
   }
   button:focus-visible,
+  summary:focus-visible,
   textarea:focus-visible,
   select:focus-visible {
     outline: 2px solid var(--color-primary);
@@ -142,7 +144,7 @@
     min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
-    padding: 16px;
+    padding: var(--note-chat-message-inset);
     scroll-padding-block: 16px;
   }
   .note-chat-empty {
@@ -327,6 +329,39 @@
     font-size: 12px;
     summary {
       cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 36px;
+      box-sizing: border-box;
+      list-style: none;
+      &::-webkit-details-marker {
+        display: none;
+      }
+    }
+    &[open] > summary {
+      position: sticky;
+      top: calc(-1 * var(--note-chat-message-inset));
+      z-index: 2;
+      background: var(--sidebar-bg-color, var(--color-surface-lowest));
+      box-shadow: 0 1px 0 var(--color-border-outline-variant);
+    }
+    .note-chat-reasoning-chevron {
+      display: flex;
+      flex-shrink: 0;
+      svg {
+        width: 16px;
+        height: 16px;
+      }
+    }
+    &[open] .note-chat-reasoning-chevron {
+      transform: rotate(180deg);
+    }
+    @media (pointer: coarse) {
+      summary {
+        min-height: 44px;
+      }
     }
     > div {
       white-space: pre-wrap;

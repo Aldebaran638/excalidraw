@@ -20,6 +20,7 @@ import {
 } from "@excalidraw/excalidraw/components/icons";
 
 import { NoteChatMarkdown } from "./NoteChatMarkdown";
+import { NoteChatReasoning } from "./NoteChatReasoning";
 import { ChatWidgetCard } from "./ChatWidgetCard";
 import { ChatWidgetBuildCard } from "./ChatWidgetBuildCard";
 import { ChatHtmlCard } from "./ChatHtmlCard";
@@ -402,12 +403,7 @@ export const NoteChatPanel = ({
                   );
                 }
                 if (block.type === "reasoning") {
-                  return (
-                    <details key={block.id} className="note-chat-reasoning">
-                      <summary>思考过程</summary>
-                      <div>{block.text}</div>
-                    </details>
-                  );
+                  return <NoteChatReasoning key={block.id} text={block.text} />;
                 }
                 if (block.type === "tool") {
                   const activity = message.activities?.find(
@@ -522,14 +518,14 @@ export const NoteChatPanel = ({
               {!message.blocks &&
                 message.role === "assistant" &&
                 message.reasoning && (
-                  <details className="note-chat-reasoning">
-                    <summary>
-                      {message.status === "generating" && !message.content
+                  <NoteChatReasoning
+                    label={
+                      message.status === "generating" && !message.content
                         ? "正在思考…"
-                        : "思考过程"}
-                    </summary>
-                    <div>{message.reasoning}</div>
-                  </details>
+                        : "思考过程"
+                    }
+                    text={message.reasoning}
+                  />
                 )}
               {!message.blocks && (
                 <NoteChatMarkdown
