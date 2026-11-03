@@ -373,7 +373,7 @@ describe("note-owned chat", () => {
     expect((await duplicate.json()).duplicate).toBe(true);
     expect(transport).toHaveBeenCalledTimes(2);
     expect((await fs.readdir(path.join(dir, ".chats", noteId))).sort()).toEqual(
-      [`${session.id}.json`, "index.json"].sort(),
+      [`${session.id}.json`, "index.json", "agent-logs"].sort(),
     );
   });
   it("preserves failed answers and retries without duplicating the user message", async () => {

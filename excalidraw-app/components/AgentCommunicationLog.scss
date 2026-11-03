@@ -1,0 +1,231 @@
+.excalidraw .agent-log-dialog {
+  .Dialog__content {
+    overflow: hidden;
+  }
+  &.Dialog--fullscreen .agent-log-close {
+    display: none;
+  }
+}
+.excalidraw .agent-log {
+  display: flex;
+  flex-direction: column;
+  height: min(720px, 75vh);
+  min-height: 200px;
+  min-width: 0;
+  color: var(--color-on-surface);
+  font: 13px/1.6 system-ui, sans-serif;
+  user-select: text;
+  -webkit-user-select: text;
+  * {
+    box-sizing: border-box;
+  }
+  p {
+    margin: 0;
+  }
+  .agent-log-description,
+  .agent-log-location {
+    color: var(--color-on-surface-variant);
+    font-size: 12px;
+  }
+  .agent-log-description {
+    margin-bottom: 12px;
+  }
+  .agent-log-location {
+    padding-top: 12px;
+    overflow-wrap: anywhere;
+  }
+  .agent-log-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  select {
+    flex: 1;
+    width: 0;
+    min-width: 0;
+    padding: 8px;
+    font: inherit;
+    color: inherit;
+    background: var(--color-surface-low);
+    border: 1px solid var(--color-border-outline-variant);
+    border-radius: 8px;
+  }
+  button:focus-visible,
+  select:focus-visible,
+  summary:focus-visible,
+  a:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: -2px;
+  }
+  .agent-log-options {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    color: var(--color-on-surface-variant);
+  }
+  .agent-log-options label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 36px;
+  }
+  .agent-log-options input {
+    accent-color: var(--color-primary);
+  }
+  .agent-log-scroll-wrap {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+  }
+  .agent-log-scroll {
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: none;
+  }
+  .agent-log-scroll::-webkit-scrollbar {
+    display: none;
+  }
+  .agent-log-scroll-track {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: -6px;
+    width: 12px;
+    touch-action: none;
+    user-select: none;
+  }
+  .agent-log-scroll-track span {
+    position: absolute;
+    width: 5px;
+    right: 2px;
+    background: var(--color-on-surface-variant);
+    opacity: 0.4;
+    border-radius: 8px;
+    pointer-events: none;
+  }
+  .agent-log-scroll-track:hover span,
+  .agent-log-scroll-track:focus-visible span {
+    opacity: 0.8;
+  }
+  .agent-log-entry {
+    border-top: 1px solid var(--color-border-outline-variant);
+    margin-right: 10px;
+  }
+  .agent-log-entry summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    padding: 12px 4px;
+    min-height: 44px;
+    list-style: none;
+  }
+  summary::-webkit-details-marker {
+    display: none;
+  }
+  .agent-log-sequence {
+    color: var(--color-on-surface-variant);
+    font-variant-numeric: tabular-nums;
+    min-width: 22px;
+  }
+  .agent-log-entry-heading {
+    flex: 1;
+    min-width: 0;
+  }
+  .agent-log-entry-heading strong {
+    font-size: 13px;
+    font-weight: 550;
+  }
+  .agent-log-entry-heading small {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-on-surface-variant);
+  }
+  time {
+    color: var(--color-on-surface-variant);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+  .agent-log-entry summary::after {
+    content: "›";
+    color: var(--color-on-surface-variant);
+    font-size: 20px;
+  }
+  details[open] > summary::after {
+    transform: rotate(90deg);
+  }
+  .agent-log-entry-body {
+    padding: 0 8px 12px 38px;
+  }
+  .agent-log-entry-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--color-on-surface-variant);
+    font-size: 11px;
+  }
+  .agent-log-entry-meta span {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  pre {
+    padding: 12px;
+    margin: 8px 0 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    font: 12px/1.6 Consolas, monospace;
+    background: var(--color-surface-low);
+    border-radius: 8px;
+    user-select: text;
+  }
+  h4 {
+    margin: 12px 0 0;
+    font-size: 12px;
+    font-weight: 550;
+    color: var(--color-on-surface-variant);
+  }
+  .has-error strong,
+  .agent-log-error {
+    color: var(--color-danger);
+  }
+  .agent-log-error {
+    padding: 8px 0;
+  }
+  .agent-log-empty {
+    padding: 32px 16px;
+    color: var(--color-on-surface-variant);
+    text-align: center;
+  }
+  @media (max-width: 600px) {
+    height: calc(100dvh - 130px);
+    .agent-log-entry summary {
+      gap: 6px;
+    }
+    .agent-log-entry-body {
+      padding-left: 8px;
+    }
+    .agent-log-description {
+      font-size: 11px;
+    }
+    .agent-log-location {
+      font-size: 10px;
+    }
+  }
+  @media (pointer: coarse) {
+    .agent-log-options label {
+      min-height: 44px;
+    }
+    .agent-log-scroll-track {
+      width: 20px;
+    }
+  }
+}

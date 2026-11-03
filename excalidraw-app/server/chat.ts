@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import fs from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 
 import { readSSE } from "../data/sse";
 import { ToolProseStream } from "../data/toolProse";
@@ -54,6 +57,7 @@ import { requestAgentStream } from "./agentTransport";
 import { AgentPreviews } from "./agentPreview";
 import { missingDomMeasurements } from "./agentDom";
 import { AgentReadProgress } from "./agentProgress";
+import { AgentLogStore } from "./agentLog";
 
 import { ChatStore, ChatError } from "./chatStore";
 import { ChatArtifactStore } from "./chatArtifacts";
@@ -85,6 +89,7 @@ import type {
   AppTaskTarget,
 } from "../data/chatTypes";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { AgentTurnLog } from "./agentLog";
 
 type ModelMessage = Record<string, unknown>;
 export const createChatService = async (
@@ -96,6 +101,7 @@ export const createChatService = async (
   const store = new ChatStore(directory);
   const artifacts = new ChatArtifactStore(directory);
   const htmlStore = new ChatHtmlStore(directory);
+  const logs = new AgentLogStore(directory);
   await store.recover();
   const active = new Map<
     string,
@@ -105,12 +111,88 @@ export const createChatService = async (
       done: Promise<void>;
       finish: () => void;
       previews?: AgentPreviews;
+      log?: AgentTurnLog;
     }
   >();
   const keyFor = (noteId: string, sessionId: string) =>
     `${noteId}/${sessionId}`;
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const artifactURL = new URL(req.url || "/", "http://localhost");
+    const logMatch = artifactURL.pathname.match(
+      /^\/api\/notes\/([\w-]+)\/chats\/([\w-]+)\/agent-logs(?:\/([\w-]+))?$/,
+    );
+    if (logMatch) {
+      try {
+        if (
+          req.headers.origin &&
+          new URL(req.headers.origin).host !== req.headers.host
+        ) {
+          throw new ChatError(403, "通信日志请求必须同源");
+        }
+        if (req.method !== "GET") {
+          throw new ChatError(405, "通信日志只允许读取");
+        }
+        const [, noteId, sessionId, turnId] = logMatch;
+        await store.assertNote(noteId);
+        await store.read(noteId, sessionId);
+        const running = active.get(keyFor(noteId, sessionId));
+        if (!turnId) {
+          sendJson(res, 200, {
+            turns: (await logs.list(noteId, sessionId)).map((turn) => ({
+              ...turn,
+              running: running?.turnId === turn.turnId,
+            })),
+          });
+        } else {
+          if (running?.turnId === turnId) {
+            await running.log?.flush();
+          }
+          if (artifactURL.searchParams.get("download") === "1") {
+            const file = logs.file(noteId, sessionId, turnId);
+            await fs.access(file);
+            res.writeHead(200, {
+              "Content-Type": "application/x-ndjson; charset=utf-8",
+              "Content-Disposition": `attachment; filename="agent-${turnId}.jsonl"`,
+              "Cache-Control": "no-store",
+              "X-Content-Type-Options": "nosniff",
+            });
+            await pipeline(createReadStream(file), res);
+          } else {
+            const after = Number(artifactURL.searchParams.get("after") || 0);
+            const limit = Number(artifactURL.searchParams.get("limit") || 40);
+            if (
+              !Number.isSafeInteger(after) ||
+              after < 0 ||
+              !Number.isSafeInteger(limit) ||
+              limit < 1 ||
+              limit > 100
+            ) {
+              throw new ChatError(400, "日志分页参数无效");
+            }
+            sendJson(res, 200, {
+              ...(await logs.page(noteId, sessionId, turnId, after, limit)),
+              recordingError:
+                running?.turnId === turnId ? running.log?.error : undefined,
+            });
+          }
+        }
+      } catch (error) {
+        if (res.headersSent) {
+          res.destroy();
+        } else {
+          sendJson(
+            res,
+            error instanceof ChatError
+              ? error.status
+              : (error as NodeJS.ErrnoException).code === "ENOENT"
+              ? 404
+              : 500,
+            { error: (error as Error).message },
+          );
+        }
+      }
+      return true;
+    }
     const previewMatch = artifactURL.pathname.match(
       /^\/api\/notes\/([\w-]+)\/chats\/([\w-]+)\/turns\/([\w-]+)\/preview$/,
     );
@@ -135,6 +217,7 @@ export const createChatService = async (
         ) {
           throw new ChatError(409, "该预览不属于当前运行轮次或报告无效");
         }
+        running.log?.record("preview_feedback", body);
         sendJson(res, 200, { accepted: true });
       } catch (error) {
         sendJson(res, error instanceof ChatError ? error.status : 400, {
@@ -703,9 +786,33 @@ export const createChatService = async (
       let session: ChatSession;
       let started = false;
       let saved = true;
+      const log = logs.start(noteId, sessionId, body.turnId);
+      active.get(key)!.log = log;
+      log.record("turn_start", {
+        model: config.model,
+        thinking,
+        content: body.content,
+        workspace,
+        snapshotAt: snapshot.capturedAt,
+        elementCount: snapshot.elements.length,
+        protocol: req.headers["x-chat-protocol"] || "legacy",
+        runtimeVersion: HTML_RUNTIME_VERSION,
+      });
+      const loggedTransport = log.transport(transport);
       const emit = (
         event: Omit<ChatEvent, "noteId" | "sessionId" | "turnId">,
       ) => {
+        if (
+          ["workspace", "widget_ready", "widget_error", "tool_end"].includes(
+            event.type,
+          ) ||
+          (event.type === "block" &&
+            !event.blockDelta &&
+            event.block &&
+            !["text", "reasoning", "tool"].includes(event.block.type))
+        ) {
+          log.record("system_event", event);
+        }
         if (!res.destroyed && !res.writableEnded) {
           res.write(
             `event: ${event.type}\ndata: ${JSON.stringify({
@@ -1393,7 +1500,7 @@ export const createChatService = async (
               });
             }
             const upstream = await requestAgentStream(
-              transport,
+              loggedTransport,
               `${config.baseUrl.replace(/\/$/, "")}/chat/completions`,
               {
                 method: "POST",
@@ -1445,6 +1552,7 @@ export const createChatService = async (
               throw new Error(`模型服务返回错误 ${upstream.status}`);
             }
             for await (const event of readSSE(upstream.body)) {
+              log.frame(event.data);
               if (event.data === "[DONE]") {
                 break;
               }
@@ -1534,6 +1642,7 @@ export const createChatService = async (
               }
             }
           }
+          log.endModel();
           fence.finish();
           prose.finish();
           clearTimeout(idle);
@@ -1610,6 +1719,12 @@ export const createChatService = async (
                   tool_call_id: tool.id,
                   content: executed.text,
                 });
+                log.record("tool_result", {
+                  toolCallId: tool.id,
+                  name: tool.function.name,
+                  reused: true,
+                  modelContent: executed.text,
+                });
                 continue;
               }
               const repairForCall = repairing;
@@ -1639,6 +1754,11 @@ export const createChatService = async (
               assistant.blocks!.push(toolBlock);
               publishBlock(toolBlock);
               emit({ type: "tool_start", activity });
+              log.record("tool_call", {
+                toolCallId: tool.id,
+                name: tool.function.name,
+                arguments: tool.function.arguments,
+              });
               let result: Record<string, unknown>;
               let failedSource: string | undefined;
               try {
@@ -2104,6 +2224,12 @@ export const createChatService = async (
                 tool_call_id: tool.id,
                 content: text,
               });
+              log.record("tool_result", {
+                toolCallId: tool.id,
+                name: tool.function.name,
+                result,
+                modelContent: text,
+              });
               executedTools.set(tool.id, { signature, text });
               activity.status = result.error ? "failed" : "complete";
               if (mutationResult && !result.error) {
@@ -2446,6 +2572,7 @@ export const createChatService = async (
           });
         }
       } finally {
+        log.endModel(assistant.error);
         try {
           fence.finish();
           prose.finish();
@@ -2574,12 +2701,36 @@ export const createChatService = async (
         clearTimeout(total);
         clearTimeout(idle);
         await pendingSave;
+        await log.flush();
+        if (log.error) {
+          assistant.communicationLogError = log.error;
+        }
         if (started) {
           try {
             session = await persist();
             saved = !htmlSaveFailed;
           } catch {
             saved = false;
+          }
+        }
+        log.record("turn_end", {
+          status: assistant.status,
+          error: assistant.error,
+          saved,
+          clientError: saved ? assistant.error : "回答尚未保存：写入失败",
+          normalToolRounds: toolBudget.normalRounds,
+          recoveryToolRounds: toolBudget.recoveryRounds,
+          htmlSaveFailed,
+        });
+        await log.flush();
+        if (log.error && !assistant.communicationLogError) {
+          assistant.communicationLogError = log.error;
+          if (started && saved) {
+            try {
+              session = await persist();
+            } catch {
+              saved = false;
+            }
           }
         }
         if (res.headersSent && !res.writableEnded) {

@@ -110,6 +110,12 @@
       max-width: 260px;
     }
   }
+  .note-chat-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
   .note-chat-session-row {
     display: flex;
     gap: 6px;

@@ -17,6 +17,7 @@ import {
   collapseDownIcon,
   playerStopFilledIcon,
   CloseIcon,
+  historyIcon,
 } from "@excalidraw/excalidraw/components/icons";
 
 import { NoteChatMarkdown } from "./NoteChatMarkdown";
@@ -25,6 +26,7 @@ import { ChatWidgetCard } from "./ChatWidgetCard";
 import { ChatWidgetBuildCard } from "./ChatWidgetBuildCard";
 import { ChatHtmlCard } from "./ChatHtmlCard";
 import { ChatIconButton } from "./ChatIconButton";
+import { AgentCommunicationLog } from "./AgentCommunicationLog";
 import "./NoteChatPanel.scss";
 
 import type { NoteChatController } from "../data/noteChats";
@@ -51,6 +53,10 @@ export const NoteChatPanel = ({
   const follow = useRef(true);
   const [below, setBelow] = useState(false);
   const [menu, setMenu] = useState(false);
+  const [logTarget, setLogTarget] = useState<{
+    noteId: string;
+    sessionId: string;
+  } | null>(null);
   const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
   const [title, setTitle] = useState("");
   const [copied, setCopied] = useState("");
@@ -182,14 +188,23 @@ export const NoteChatPanel = ({
             {name || "保存笔记后，为它开启专属对话"}
           </p>
         </div>
-        <Button
-          onSelect={() => void controller.create()}
-          disabled={state.busy}
-          title="新建会话"
-          aria-label="新建聊天会话"
-        >
-          ＋
-        </Button>
+        <div className="note-chat-header-actions">
+          {noteId && selected && (
+            <ChatIconButton
+              label="查看 Agent 通信日志"
+              icon={historyIcon}
+              onClick={() => setLogTarget({ noteId, sessionId: selected })}
+            />
+          )}
+          <Button
+            onSelect={() => void controller.create()}
+            disabled={state.busy}
+            title="新建会话"
+            aria-label="新建聊天会话"
+          >
+            ＋
+          </Button>
+        </div>
       </header>
       {noteId && list.length > 0 && (
         <div className="note-chat-session-row">
@@ -334,6 +349,11 @@ export const NoteChatPanel = ({
                         }[message.status])}
                 </span>
               </div>
+              {message.communicationLogError && (
+                <p className="note-chat-inline-error" role="status">
+                  {message.communicationLogError}
+                </p>
+              )}
               {editing?.id === message.id && (
                 <div>
                   <textarea
@@ -887,6 +907,17 @@ export const NoteChatPanel = ({
             Shift+Enter 换行 · 按需阅读画布 · 最近 20 轮及上下文预算内记录
           </p>
         </form>
+      )}
+      {logTarget && (
+        <AgentCommunicationLog
+          key={`${logTarget.noteId}/${logTarget.sessionId}`}
+          {...logTarget}
+          messages={
+            state.sessions[`${logTarget.noteId}/${logTarget.sessionId}`]
+              ?.messages || []
+          }
+          onClose={() => setLogTarget(null)}
+        />
       )}
       {dialog && session && noteId && (
         <Dialog

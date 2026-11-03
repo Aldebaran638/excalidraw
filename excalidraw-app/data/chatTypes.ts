@@ -40,6 +40,8 @@ export type ChatMessage = {
   activities?: ChatActivity[];
   blocks?: ChatBlock[];
   error?: string;
+  /** Communication evidence can fail independently of the answer save. */
+  communicationLogError?: string;
   /** Server-derived routing context, never accepted from model prose. */
   agentTask?: ChatAgentTask;
 };
