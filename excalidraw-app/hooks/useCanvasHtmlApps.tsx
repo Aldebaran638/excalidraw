@@ -247,7 +247,6 @@ export const useCanvasHtmlApps = ({
         pending.current = { app, valid, done };
         setPlacing(true);
         api.setActiveTool({ type: "custom", customType: "html-app-place" });
-        api.setToast({ message: "拖框放置 HTML 应用，Esc 取消" });
       }
     },
     apply: async (data, state, trial) => {

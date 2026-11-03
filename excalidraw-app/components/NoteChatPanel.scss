@@ -886,21 +886,6 @@
     font-size: 12px;
   }
 }
-.html-app-placement {
-  position: absolute;
-  left: 50%;
-  bottom: 64px;
-  transform: translateX(-50%);
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  border: 1px solid var(--default-border-color);
-  background: var(--island-bg-color);
-  border-radius: 8px;
-  max-width: calc(100% - 40px);
-}
 .html-app-reserved-region {
   position: absolute;
   box-sizing: border-box;

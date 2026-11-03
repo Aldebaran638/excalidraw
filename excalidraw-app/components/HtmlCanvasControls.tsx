@@ -1,5 +1,7 @@
 import { Button } from "@excalidraw/excalidraw/components/Button";
 
+import { CanvasActionHint } from "./CanvasActionHint";
+
 import type { useCanvasHtmlApps } from "../hooks/useCanvasHtmlApps";
 
 /** Only temporary creation UI and repository conflicts; the chat owns creation. */
@@ -21,12 +23,13 @@ export const HtmlCanvasControls = ({
       </div>
     )}
     {(widgets.region || widgets.placing) && (
-      <div className="html-app-placement" role="status">
-        {widgets.placing
-          ? "在画布拖框放置应用，Esc 取消"
-          : "区域已预留 · 在聊天中生成应用后点击导入"}
-        <Button onSelect={widgets.cancelRegion}>取消放置</Button>
-      </div>
+      <CanvasActionHint
+        message={
+          widgets.placing ? "拖框放置应用" : "区域已预留，可在聊天中生成并导入"
+        }
+        cancelLabel={widgets.placing ? "取消放置" : "取消预留区域"}
+        onCancel={widgets.cancelRegion}
+      />
     )}
     {conflict && (
       <div

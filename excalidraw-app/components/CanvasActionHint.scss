@@ -1,0 +1,88 @@
+.excalidraw .canvas-action-hint {
+  // Host children live at the editor root, outside the resized native UI layer.
+  position: absolute;
+  inset-inline: 16px;
+  bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  z-index: 5;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  font: 12px/1.5 var(--ui-font, system-ui, sans-serif);
+  color: var(--color-on-surface-variant);
+
+  &__content {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 2px 3px;
+  }
+  &__message {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  &__shortcut {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    font-size: 11px;
+  }
+  kbd {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--color-surface-low);
+    font: inherit;
+  }
+  &__cancel {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: max-content;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 4px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+    pointer-events: auto;
+    &:hover {
+      color: var(--color-primary);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    &:focus-visible {
+      outline: 2px solid var(--color-primary);
+      outline-offset: 2px;
+    }
+  }
+  @media (pointer: coarse) {
+    &__shortcut {
+      display: none;
+    }
+    &__cancel {
+      min-width: 44px;
+      min-height: 44px;
+    }
+  }
+}
+
+@media (min-width: 731px) {
+  .excalidraw:has(.app-sidebar) .canvas-action-hint {
+    inset-inline-end: var(--right-sidebar-width);
+  }
+}
+
+@media (max-width: 730px) {
+  .excalidraw:has(.app-sidebar) .canvas-action-hint {
+    top: 72px;
+    bottom: auto;
+  }
+}
