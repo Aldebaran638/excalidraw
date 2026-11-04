@@ -7,9 +7,9 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ChatStore } from "../server/chatStore";
-import { createChatService } from "../server/chat";
+import { createChatService } from "../server/agent/chat";
 import { createNoteService } from "../server/notes";
-import { sanitizeSnapshot, readNoteTool } from "../server/chatTools";
+import { sanitizeSnapshot, readNoteTool } from "../server/agent/chatTools";
 import { readSSE } from "../data/sse";
 
 import type { ChatEvent, ChatSession } from "../data/chatTypes";

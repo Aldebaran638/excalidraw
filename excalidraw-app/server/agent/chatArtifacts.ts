@@ -4,14 +4,14 @@ import { randomUUID } from "node:crypto";
 import {
   readWidget,
   validateDefinition,
-} from "../../packages/interactive-widgets/schema";
-import { validId } from "../data/noteIdentity";
+} from "../../../packages/interactive-widgets/schema";
+import { validId } from "../../data/noteIdentity";
 
-import { ChatError, ChatStore } from "./chatStore";
-import { readUtf8 } from "./fileIO";
+import { ChatError, ChatStore } from "../chatStore";
+import { readUtf8 } from "../fileIO";
 
-import type { ChatWidgetData, ChatWidgetVersion } from "../data/chatWidgets";
-import type { WidgetState } from "../../packages/interactive-widgets/types";
+import type { ChatWidgetData, ChatWidgetVersion } from "../../data/chatWidgets";
+import type { WidgetState } from "../../../packages/interactive-widgets/types";
 
 type Meta = {
   versions: {

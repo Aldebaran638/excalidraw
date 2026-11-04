@@ -7,9 +7,9 @@ import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { EXAMPLES } from "../../packages/interactive-widgets/examples";
-import { createChatService } from "../server/chat";
+import { createChatService } from "../server/agent/chat";
 import { ChatStore } from "../server/chatStore";
-import { ChatArtifactStore } from "../server/chatArtifacts";
+import { ChatArtifactStore } from "../server/agent/chatArtifacts";
 import { readSSE } from "../data/sse";
 
 import type { ChatEvent, ChatSession } from "../data/chatTypes";

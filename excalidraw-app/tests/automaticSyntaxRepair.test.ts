@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createChatService } from "../server/chat";
+import { createChatService } from "../server/agent/chat";
 import { ChatStore } from "../server/chatStore";
 import { ChatHtmlStore } from "../server/chatHtmlStore";
 import {

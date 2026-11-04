@@ -6,9 +6,9 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, expect, it, vi } from "vitest";
 
-import { AgentLogStore } from "../server/agentLog";
+import { AgentLogStore } from "../server/agent/agentLog";
 import { ChatStore } from "../server/chatStore";
-import { createChatService } from "../server/chat";
+import { createChatService } from "../server/agent/chat";
 import { readSSE } from "../data/sse";
 
 import type { AgentLogEntry } from "../data/agentLog";

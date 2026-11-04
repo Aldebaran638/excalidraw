@@ -1,4 +1,5 @@
-import { readBody, sendJson } from "./notes";
+import { readBody, sendJson } from "../notes";
+
 import { generateWidget, WidgetGenerationError } from "./widgetGeneration";
 
 import type { IncomingMessage, ServerResponse } from "node:http";

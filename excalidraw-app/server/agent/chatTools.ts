@@ -1,11 +1,11 @@
 import Ajv from "ajv";
 
-import { readCanvasHtmlApp } from "../data/chatHtml";
+import { readCanvasHtmlApp } from "../../data/chatHtml";
 
-import { ChatError } from "./chatStore";
-import { SourceToolError } from "./sourceErrors";
+import { ChatError } from "../chatStore";
+import { SourceToolError } from "../sourceErrors";
 
-import type { NoteSnapshot } from "../data/chatTypes";
+import type { NoteSnapshot } from "../../data/chatTypes";
 
 const functionTool = (
   name: string,

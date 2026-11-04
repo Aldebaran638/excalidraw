@@ -10,7 +10,7 @@ Single-click selects the whole widget. Double-click or **进入交互** enables 
 
 - `packages/interactive-widgets`: component catalog, shared JSON Schema, semantic validation, expression evaluation, actions, Worker, shared layout, interactive view and trusted static SVG. No arbitrary JS, HTML, CSS, imports or network requests from a widget definition.
 - `excalidraw-app/hooks/useAIWidgets.tsx`: canvas host, selection region, preview, state/history updates and stale-response checks.
-- `excalidraw-app/server/ai.ts`: fixed-config Qwen proxy, validation and one repair attempt. `server/notes.ts`: shared revision-aware persistence and SSE.
+- `excalidraw-app/server/agent/ai.ts`: fixed-config Qwen proxy, validation and one repair attempt. `server/notes.ts`: shared revision-aware persistence and SSE.
 - Core Excalidraw uses its native `embeddable` and `renderEmbeddable` hook. Generic `customData.embeddable` capabilities protect internal content and provide trusted export snapshots. It contains no Qwen address or widget catalog business logic.
 
 `customData.aiWidget` contains document/catalog versions, definition, state and the recent prompt. A definition has read-only datasets, initial state, derived computations and a root component tree. Bindings use literal/ref/op expressions. Actions are bounded set/toggle/reset/step/batch operations; nested Pressables execute the innermost action only. Repeat instances use stable keys and local scope. Unknown versions or damaged definitions retain their original data and show a readable placeholder. Version 1 is the first persisted catalog; future catalog migrations must be explicit.

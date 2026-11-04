@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { EXAMPLES } from "../../packages/interactive-widgets/examples";
 import { previewFromJSONPrefix } from "../../packages/interactive-widgets/streamPreview";
-import { generateWidget } from "../server/widgetGeneration";
+import { generateWidget } from "../server/agent/widgetGeneration";
 import { validateDefinition } from "../../packages/interactive-widgets/schema";
 
 import type { WidgetGenerationProgress } from "../../packages/interactive-widgets/streamPreview";

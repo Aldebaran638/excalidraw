@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ToolLoopBudget } from "../server/toolLoopBudget";
+import { ToolLoopBudget } from "../server/agent/toolLoopBudget";
 
 describe("tool loop budget", () => {
   it("allows 100 normal rounds independently of failed attempts", () => {

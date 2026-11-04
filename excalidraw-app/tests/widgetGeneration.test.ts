@@ -6,7 +6,7 @@ import {
   WidgetDefinitionError,
   widgetSchema,
 } from "../../packages/interactive-widgets/schema";
-import { generateWidget } from "../server/widgetGeneration";
+import { generateWidget } from "../server/agent/widgetGeneration";
 
 afterEach(() => vi.restoreAllMocks());
 const config = {

@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { expect, it } from "vitest";
 
 import { ChatStore } from "../server/chatStore";
-import { createChatService } from "../server/chat";
+import { createChatService } from "../server/agent/chat";
 import { CHAT_HEADERS } from "../data/clientProtocol";
 
 it("rejects an old client before model invocation and projects saved artifacts without changing storage", async () => {

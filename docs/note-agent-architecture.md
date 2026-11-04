@@ -1,5 +1,13 @@
 # 笔记 Agent：运行与验收
 
+## 服务端目录归类（2026-11-04）
+
+- 基线 `fc4ea2b5`。13 个 Agent 专属模块归入 `excalidraw-app/server/agent/`，统一由 `index.ts` 提供服务组装入口；编排、任务策略、工具、模型通信、恢复预算和通信日志不再散落于服务端根目录。目录说明见 [Agent 服务端](../excalidraw-app/server/agent/README.md)。
+- `appSource.ts`、`chatHtmlStore.ts`、`chatStore.ts`、笔记 API 及通用错误／读取／诊断模块继续作为共享能力。共享层没有导入 Agent 内部实现，只有 `services.ts` 通过目录入口组装各服务；生产 Node 服务与 Vite 均沿用原挂载方式。
+- 此次只整理模块位置、引用及文档，不修改 Agent 执行逻辑、模型提示、API、SSE、数据格式或磁盘目录；原路径不留下转发壳。旧会话、源码版本及日志无需迁移。
+- 验收：13 个迁移模块及服务组装在排除导入语句后的代码正文与基线一致；共享层反向依赖检查通过。相关回归分组共 130 通过、2 跳过。首次整组有一条旧断言失败，使用相同工作区依赖在 `fc4ea2b5` 对照复现：整份 HTML 误回复已有三次完成恢复，共四次请求，旧测试仍要求一次。仅更新该过期断言，并加强最终失败、所有草稿均不可导入的检查，该文件复跑 10/10 通过，产品策略未改。
+- 类型检查、相关零警告 lint、格式检查和生产 Docker 构建通过。3009 启动及现有通信日志浏览器回归通过（会话恢复、日志读取／复制／下载、实时追加、窄屏和无历史写入），本次零 Qwen 请求。前端仍为 `index-CtuzsuXA.js`、协议 9／运行时 3。原笔记目录和 3001 保持不变，更新前备份为 `.local-data/backups/agent-directory-20261104-cc41HQ/notes.tar.gz`；单元对照临时 worktree 已移除。
+
 ## 纯文字放置指引（2026-11-03）
 
 - 基线 `7788d91e`。采用用户选定的 A：说明、Esc 和唯一的“取消”文字按钮，无叉号、外框、底色、阴影或模糊效果。取消或完成放置后直接移除指引，不追加成功 Toast 或“已取消／已放置／再试一次”；取消复用原有状态与工具切换，不新增场景元素和历史。
@@ -46,14 +54,14 @@ Qwen 的工具调用不是执行凭据：只有真实 `tool_calls` 的执行结�
 
 | 层 | 实现 | 职责 |
 | --- | --- | --- |
-| 任务与完成条件 | `server/agentPolicy.ts` | 区分聊天、创建、修改，否定要求不触发创建；有界纠正缺失产物和虚报成功 |
-| 工作记忆 | `server/agentContext.ts` | 将完整结束的旧调用／结果对归档为文字回执，保留最近调用原始参数及源码页；不向模型提供伪参数、不改写保存历史 |
+| 任务与完成条件 | `server/agent/agentPolicy.ts` | 区分聊天、创建、修改，否定要求不触发创建；有界纠正缺失产物和虚报成功 |
+| 工作记忆 | `server/agent/agentContext.ts` | 将完整结束的旧调用／结果对归档为文字回执，保留最近调用原始参数及源码页；不向模型提供伪参数、不改写保存历史 |
 | 文件读取 | `server/fileIO.ts` | 对挂载目录的 ENOENT/ENODATA/EIO/EBUSY 有界重读同一文件；不创建替代文件或身份，持续失败仍明确报错 |
-| 模型传输 | `server/agentTransport.ts` | 仅在流尚未接受前重试短暂连接/429/网关错误，不重放已接收流和已执行工具 |
-| 无进展检测 | `server/agentProgress.ts` | 连续三次读取同一版本和同一页后提示推进，并在已有编辑权限时暂收起重复读取入口；不同区域、搜索和真实编辑仍可用，不降低正常 100 轮额度 |
-| 调度与版本 | `server/chat.ts` | 单轮生命周期、停止、工具幂等、工作区、源文件、SSE 与保存边界 |
-| 预览验证 | `server/agentPreview.ts`、`data/appPreview.ts` | 只接受当前轮次预期作品的受限报告，检查运行错误、显式节点数量和 ID |
-| 源码／DOM 对照 | `server/agentDom.ts` | 对照完整运行时 ID 列表，检查同一代码块内查询缺失容器后无条件测量的空引用风险；不执行生成代码，不把它称为完整交互证明 |
+| 模型传输 | `server/agent/agentTransport.ts` | 仅在流尚未接受前重试短暂连接/429/网关错误，不重放已接收流和已执行工具 |
+| 无进展检测 | `server/agent/agentProgress.ts` | 连续三次读取同一版本和同一页后提示推进，并在已有编辑权限时暂收起重复读取入口；不同区域、搜索和真实编辑仍可用，不降低正常 100 轮额度 |
+| 调度与版本 | `server/agent/chat.ts` | 单轮生命周期、停止、工具幂等、工作区、源文件、SSE 与保存边界 |
+| 预览验证 | `server/agent/agentPreview.ts`、`data/appPreview.ts` | 只接受当前轮次预期作品的受限报告，检查运行错误、显式节点数量和 ID |
+| 源码／DOM 对照 | `server/agent/agentDom.ts` | 对照完整运行时 ID 列表，检查同一代码块内查询缺失容器后无条件测量的空引用风险；不执行生成代码，不把它称为完整交互证明 |
 | 源码 | `server/appSource.ts`、`server/chatHtmlStore.ts` | 哈希、精确原子替换、JS/HTML 校验、不可覆盖版本与独立试用状态 |
 | 依赖与流式投影 | `data/appLibraries.ts`、`data/htmlLibraryStream.ts` | 固定依赖目录，使用真正的 HTML 解析器识别 CDN 标签；相同版本 D3/Mermaid 按顺序使用本地镜像，原始源码不变 |
 | 交互宿主 | `components/HtmlAppView.tsx`、`data/htmlRuntime.ts` | 单实例增量解析、依赖安装、状态、隔离、静态快照及实际运行反馈 |

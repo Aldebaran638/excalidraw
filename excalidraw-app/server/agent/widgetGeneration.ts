@@ -1,33 +1,33 @@
 import { randomUUID } from "node:crypto";
 
-import { readSSE } from "../data/sse";
-import { previewFromJSONPrefix } from "../../packages/interactive-widgets/streamPreview";
+import { readSSE } from "../../data/sse";
+import { previewFromJSONPrefix } from "../../../packages/interactive-widgets/streamPreview";
 
 import {
   CATALOG,
   ICONS,
   OPERATIONS,
-} from "../../packages/interactive-widgets/catalog";
+} from "../../../packages/interactive-widgets/catalog";
 import {
   validateDefinition,
   widgetSchema,
   WidgetDefinitionError,
-} from "../../packages/interactive-widgets/schema";
-import { computeWidget } from "../../packages/interactive-widgets/compute";
-import { layoutWidget } from "../../packages/interactive-widgets/layout";
-import { EXAMPLES } from "../../packages/interactive-widgets/examples";
+} from "../../../packages/interactive-widgets/schema";
+import { computeWidget } from "../../../packages/interactive-widgets/compute";
+import { layoutWidget } from "../../../packages/interactive-widgets/layout";
+import { EXAMPLES } from "../../../packages/interactive-widgets/examples";
 import {
   ARCHITECTURE,
   WORKFLOW,
   SCENARIO,
-} from "../../packages/interactive-widgets/designExamples";
+} from "../../../packages/interactive-widgets/designExamples";
 
 import type {
   WidgetDefinition,
   WidgetState,
-} from "../../packages/interactive-widgets/types";
+} from "../../../packages/interactive-widgets/types";
 import type { AIConfig } from "./ai";
-import type { WidgetGenerationProgress } from "../../packages/interactive-widgets/streamPreview";
+import type { WidgetGenerationProgress } from "../../../packages/interactive-widgets/streamPreview";
 export type WidgetGenerationInput = {
   prompt: string;
   context?: unknown[];

@@ -2,7 +2,7 @@ import type {
   AppTaskTarget,
   ChatAgentTask,
   ChatMessage,
-} from "../data/chatTypes";
+} from "../../data/chatTypes";
 
 export type AgentTask = ChatAgentTask["kind"];
 

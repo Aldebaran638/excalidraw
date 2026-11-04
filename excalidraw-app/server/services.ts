@@ -1,6 +1,5 @@
-import { createAIHandler, aiConfigFromEnv } from "./ai";
+import { createAIHandler, aiConfigFromEnv, createChatService } from "./agent";
 import { createNoteService, sendJson } from "./notes";
-import { createChatService } from "./chat";
 import { clientInfo } from "./clientInfo";
 import { createAppApi } from "./appApi";
 

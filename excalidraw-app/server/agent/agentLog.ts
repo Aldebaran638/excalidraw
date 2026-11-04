@@ -4,16 +4,16 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 
-import { validId } from "../data/noteIdentity";
-import { agentLogLabels } from "../data/agentLog";
+import { validId } from "../../data/noteIdentity";
+import { agentLogLabels } from "../../data/agentLog";
 
-import { ChatError } from "./chatStore";
+import { ChatError } from "../chatStore";
 
 import type {
   AgentLogEntry,
   AgentLogKind,
   AgentLogPage,
-} from "../data/agentLog";
+} from "../../data/agentLog";
 
 /** Separate append-only communication evidence, never included in model history. */
 export class AgentLogStore {

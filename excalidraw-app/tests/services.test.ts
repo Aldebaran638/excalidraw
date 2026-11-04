@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createNoteService } from "../server/notes";
-import { createAIHandler } from "../server/ai";
+import { createAIHandler } from "../server/agent/ai";
 import { EXAMPLES } from "../../packages/interactive-widgets/examples";
 
 const cleanups: (() => Promise<unknown>)[] = [];

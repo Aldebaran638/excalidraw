@@ -2,7 +2,7 @@
 /* eslint-disable no-console */
 import assert from "node:assert/strict";
 
-import { generateWidget } from "../server/widgetGeneration";
+import { generateWidget } from "../server/agent/widgetGeneration";
 import { computeWidget } from "../../packages/interactive-widgets/compute";
 
 const baseUrl = process.env.QWEN_BASE_URL;

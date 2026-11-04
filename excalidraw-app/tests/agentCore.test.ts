@@ -8,9 +8,9 @@ import {
   needsNoteTools,
   followsAppTask,
   permitsSourceEdit,
-} from "../server/agentPolicy";
-import { compactAgentContext } from "../server/agentContext";
-import { requestAgentStream } from "../server/agentTransport";
+} from "../server/agent/agentPolicy";
+import { compactAgentContext } from "../server/agent/agentContext";
+import { requestAgentStream } from "../server/agent/agentTransport";
 import {
   validateAppSource,
   replaceSource,
@@ -25,11 +25,11 @@ import {
   inspectSvgGeometry,
   inspectNodeInteractions,
 } from "../data/appPreview";
-import { AgentPreviews } from "../server/agentPreview";
+import { AgentPreviews } from "../server/agent/agentPreview";
 import { previewStateKey } from "../data/appPreview";
 import { readUtf8 } from "../server/fileIO";
-import { missingDomMeasurements } from "../server/agentDom";
-import { AgentReadProgress } from "../server/agentProgress";
+import { missingDomMeasurements } from "../server/agent/agentDom";
+import { AgentReadProgress } from "../server/agent/agentProgress";
 
 import type { ChatMessage } from "../data/chatTypes";
 

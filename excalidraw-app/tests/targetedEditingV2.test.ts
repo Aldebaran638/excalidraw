@@ -18,10 +18,10 @@ import {
   searchSource,
   sourceErrorCode,
 } from "../server/appSource";
-import { validateSourceArguments } from "../server/chatTools";
+import { validateSourceArguments } from "../server/agent/chatTools";
 import { ChatStore } from "../server/chatStore";
 import { ChatHtmlStore } from "../server/chatHtmlStore";
-import { createChatService } from "../server/chat";
+import { createChatService } from "../server/agent/chat";
 import { readSSE } from "../data/sse";
 import { CHAT_HEADERS } from "../data/clientProtocol";
 import { previewStateKey } from "../data/appPreview";

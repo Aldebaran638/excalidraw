@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createChatService } from "../server/chat";
+import { createChatService } from "../server/agent/chat";
 import { ChatStore } from "../server/chatStore";
 import { ChatHtmlStore } from "../server/chatHtmlStore";
 import {
@@ -234,7 +234,15 @@ describe("source editing reliability", () => {
     );
     expect(draft.source).toContain("整份重写");
     expect(draft.recovery?.code).toBe("protocol");
-    expect(f.requests).toHaveLength(1);
+    // Initial response plus the three existing bounded completion recoveries.
+    // fc4ea2b5 already makes four calls here; none may publish a rewrite.
+    expect(f.requests).toHaveLength(4);
+    expect(message!.status).toBe("failed");
+    expect(
+      message!.blocks!.every(
+        (entry) => entry.type !== "html" || (!entry.complete && !entry.saved),
+      ),
+    ).toBe(true);
     await expect(
       f.html.readApp(f.noteId, block.ref.artifactId, 1),
     ).rejects.toThrow("源码文件缺失");

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { editSource, sourceHash, validateAppSource } from "../server/appSource";
 import { ChatHtmlStore } from "../server/chatHtmlStore";
 import { ChatStore } from "../server/chatStore";
-import { createChatService } from "../server/chat";
+import { createChatService } from "../server/agent/chat";
 import { readSSE } from "../data/sse";
 
 const folders: string[] = [];

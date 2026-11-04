@@ -3,15 +3,15 @@ import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 
-import { readSSE } from "../data/sse";
-import { ToolProseStream } from "../data/toolProse";
-import { HTML_ENVIRONMENT_GUIDE } from "../data/htmlEnvironment";
+import { readSSE } from "../../data/sse";
+import { ToolProseStream } from "../../data/toolProse";
+import { HTML_ENVIRONMENT_GUIDE } from "../../data/htmlEnvironment";
 import {
   supportsHtmlBlocks,
   HTML_RUNTIME_VERSION,
-} from "../data/clientProtocol";
+} from "../../data/clientProtocol";
 
-import { validId } from "../data/noteIdentity";
+import { validId } from "../../data/noteIdentity";
 
 import {
   HtmlFenceStream,
@@ -19,15 +19,15 @@ import {
   readCanvasHtmlApp,
   isHtmlState,
   HTML_SYNTAX_REPAIR_LIMIT,
-} from "../data/chatHtml";
+} from "../../data/chatHtml";
 
-import { APP_LIBRARY_GUIDE } from "../data/appLibraries";
+import { APP_LIBRARY_GUIDE } from "../../data/appLibraries";
 
 import {
   previewProblems,
   isPreviewReport,
   previewStateKey,
-} from "../data/appPreview";
+} from "../../data/appPreview";
 
 import {
   AppSyntaxError,
@@ -39,9 +39,16 @@ import {
   SourceReadCoverage,
   sourceErrorCode,
   searchSource,
-} from "./appSource";
-import { SourceToolError } from "./sourceErrors";
-import { diagnoseStyles } from "./styleDiagnostics";
+} from "../appSource";
+import { SourceToolError } from "../sourceErrors";
+import { diagnoseStyles } from "../styleDiagnostics";
+
+import { ChatStore, ChatError } from "../chatStore";
+
+import { ChatHtmlStore } from "../chatHtmlStore";
+
+import { readBody, sendJson } from "../notes";
+
 import { ToolLoopBudget } from "./toolLoopBudget";
 import {
   agentTask,
@@ -59,9 +66,7 @@ import { missingDomMeasurements } from "./agentDom";
 import { AgentReadProgress } from "./agentProgress";
 import { AgentLogStore } from "./agentLog";
 
-import { ChatStore, ChatError } from "./chatStore";
 import { ChatArtifactStore } from "./chatArtifacts";
-import { ChatHtmlStore } from "./chatHtmlStore";
 
 import {
   NOTE_TOOLS,
@@ -72,14 +77,13 @@ import {
   elementTitle,
   validateSourceArguments,
 } from "./chatTools";
-import { readBody, sendJson } from "./notes";
 
-import type { AppPreviewReport } from "../data/appPreview";
+import type { AppPreviewReport } from "../../data/appPreview";
 
-import type { ChatBlock, HtmlArtifact } from "../data/chatHtml";
+import type { ChatBlock, HtmlArtifact } from "../../data/chatHtml";
 
 import type { AIConfig } from "./ai";
-import type { ChatWorkspace } from "../data/chatWidgets";
+import type { ChatWorkspace } from "../../data/chatWidgets";
 import type {
   ChatActivity,
   ChatEvent,
@@ -87,7 +91,7 @@ import type {
   ChatSession,
   AppWorkspace,
   AppTaskTarget,
-} from "../data/chatTypes";
+} from "../../data/chatTypes";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AgentTurnLog } from "./agentLog";
 

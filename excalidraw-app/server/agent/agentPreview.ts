@@ -1,6 +1,6 @@
-import { isPreviewReport } from "../data/appPreview";
+import { isPreviewReport } from "../../data/appPreview";
 
-import type { AppPreviewReport } from "../data/appPreview";
+import type { AppPreviewReport } from "../../data/appPreview";
 
 /** Scoped to a single active turn; unsolicited/late reports have no authority. */
 export class AgentPreviews {
