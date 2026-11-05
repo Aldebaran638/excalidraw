@@ -4,8 +4,8 @@ services:
       context: .
       target: production
       args:
-        NODE_BUILD_IMAGE: ${NODE_BUILD_IMAGE:-node:24@sha256:8530f76a96d88820d288761f022e318970dda93d01536919fbc16076b7983e63}
-        NODE_RUNTIME_IMAGE: ${NODE_RUNTIME_IMAGE:-node:24-alpine}
+        NODE_BUILD_IMAGE: ${NODE_BUILD_IMAGE:-node:24-bookworm}
+        NODE_RUNTIME_IMAGE: ${NODE_RUNTIME_IMAGE:-node:24-bookworm-slim}
     init: true
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     ports:
