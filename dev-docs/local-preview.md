@@ -2,10 +2,9 @@
 
 日常服务保留在 **3001**；应用预览固定使用 **3009**，不另开 3002–3008 或其他应用预览端口。
 
-使用 `docker-compose.preview.yml`，明确指定与日常笔记分开的预览数据目录：
+使用 `docker-compose.preview.yml`，固定挂载项目的 `.local-data/preview/notes/`，不通过环境变量切换验收数据目录：
 
 ```bash
-PREVIEW_NOTES_DIR=/absolute/path/to/preview-notes \
 QWEN_BASE_URL=http://10.252.221.218:18006/v1 \
 docker compose -p excalidraw-preview -f docker-compose.preview.yml up -d --build
 ```
@@ -35,3 +34,7 @@ node excalidraw-app/tests/note-chat-display.cjs
 模拟模型：在独立验收容器内运行 `excalidraw-app/tests/chat-widget-fixture.cjs`，上游配置为容器自身的 `http://127.0.0.1:3304/v1`，模型为 `fixture-widgets`，不发布 3304 到宿主。运行 `chat-widget-stream-browser.cjs`，它会验证完整响应结束前出现真实节点、预览不可操作、正文失败后作品保留、刷新和主题/窄屏表现。`chat-widget-browser.cjs` 覆盖版本、试用、导入及画布历史回归。
 
 真实 Qwen：恢复真实上游及模型配置后，`chat-widget-real.cjs` 在独立笔记目录验收工具调用、流式预览及版本修改。`widget-generation-real.ts` 可直接验证共享生成器的真实流式输出，不写笔记和聊天。模拟模型成功不代表真实模型成功。验收结束后重新创建预览容器，恢复原笔记挂载及真实模型配置，停止容器内模拟接口。
+
+## Pi 运行依赖
+
+开发与生产使用 Node 24（仓库 `.nvmrc`），构建及运行镜像统一为 Debian Bookworm，保留 Pi SDK 的包资源和动态导入。`yarn build:server` 将锁定的 SDK 运行依赖闭包复制到 `server-dist/node_modules/`，生产镜像直接携带该目录，不在启动时联网安装。服务端测试使用 `yarn vitest run --config vitest.server.config.mts <测试文件>`，浏览器测试继续使用原配置。

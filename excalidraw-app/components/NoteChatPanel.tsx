@@ -905,7 +905,7 @@ export const NoteChatPanel = ({
               />
             )}
           <p className="note-chat-context-hint">
-            Shift+Enter 换行 · 按需阅读画布 · 最近 20 轮及上下文预算内记录
+            Shift+Enter 换行 · 按需阅读画布 · 长对话自动整理上下文
           </p>
         </form>
       )}
