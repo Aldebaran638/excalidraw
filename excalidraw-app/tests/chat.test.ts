@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { createServer } from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -373,7 +374,7 @@ describe("note-owned chat", () => {
     expect((await duplicate.json()).duplicate).toBe(true);
     expect(transport).toHaveBeenCalledTimes(2);
     expect((await fs.readdir(path.join(dir, ".chats", noteId))).sort()).toEqual(
-      [`${session.id}.json`, "index.json", "agent-logs"].sort(),
+      [`${session.id}.json`, "index.json", "agent-logs", "pi"].sort(),
     );
   });
   it("preserves failed answers and retries without duplicating the user message", async () => {

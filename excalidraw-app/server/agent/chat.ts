@@ -3,7 +3,6 @@ import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 
-import { readSSE } from "../../data/sse";
 import { ToolProseStream } from "../../data/toolProse";
 import { HTML_ENVIRONMENT_GUIDE } from "../../data/htmlEnvironment";
 import {
@@ -59,8 +58,13 @@ import {
   followsAppTask,
   permitsSourceEdit,
 } from "./agentPolicy";
-import { compactAgentContext } from "./agentContext";
-import { requestAgentStream } from "./agentTransport";
+import { runNoteAgent } from "./piRuntime";
+import {
+  checkpointPiProjection,
+  acknowledgePiProjection,
+  recoverPiProjections,
+} from "./piProjection";
+
 import { AgentPreviews } from "./agentPreview";
 import { missingDomMeasurements } from "./agentDom";
 import { AgentReadProgress } from "./agentProgress";
@@ -77,6 +81,8 @@ import {
   elementTitle,
   validateSourceArguments,
 } from "./chatTools";
+
+import type { PiToolCall } from "./piRuntime";
 
 import type { AppPreviewReport } from "../../data/appPreview";
 
@@ -106,6 +112,7 @@ export const createChatService = async (
   const artifacts = new ChatArtifactStore(directory);
   const htmlStore = new ChatHtmlStore(directory);
   const logs = new AgentLogStore(directory);
+  await recoverPiProjections(directory, store);
   await store.recover();
   const active = new Map<
     string,
@@ -1454,1050 +1461,955 @@ export const createChatService = async (
           }
           return "skipped" as const;
         };
-        for (let round = 0; ; round++) {
-          fence.beginResponse();
-          const recoveryRound =
-            Boolean(repairing || previewRepairBlock) || protocolRecovery;
-          protocolRecovery = false;
-          compactAgentContext(messages, contextLimit);
-          if (JSON.stringify(messages).length > contextLimit) {
-            throw new Error("本轮上下文预算已满，请缩小问题范围");
-          }
-          armIdle(60000);
-          const responseTextStart = assistant.content.length;
-          let content = "";
-          let reasoning = "";
-          let finish: string | null = null;
-          const tools = new Map<
-            number,
-            {
-              id: string;
-              type: "function";
-              function: { name: string; arguments: string };
+        let round = -1;
+        let responseTextStart = 0;
+        let recoveryRound = false;
+        let successfulCalls = 0;
+        let failedCalls = 0;
+        let successfulMutation = false;
+        let commandFailure = "";
+        let finish: string | null = null;
+        const tools = new Map<number, PiToolCall>();
+        const executeTool = async (tool: PiToolCall): Promise<string> => {
+          toolBudget.assertAvailable();
+          const signature = JSON.stringify(tool.function);
+          const executed = executedTools.get(tool.id);
+          if (executed) {
+            if (executed.signature !== signature) {
+              throw new Error("重复工具标识对应不同参数，已停止");
             }
-          >();
-          if (round === 0 && explicitWidgetTool && !retainedArtifacts.length) {
-            // Explicit commands are dispatched by the host, not attributed to
-            // the model. The shared generator still requests real Qwen output.
-            tools.set(0, {
-              id: `command-${randomUUID()}`,
-              type: "function",
-              function: {
-                name: explicitWidgetTool,
-                arguments: JSON.stringify({ prompt: body.content }),
-              },
-            });
-            finish = "tool_calls";
-          } else {
-            const canEdit = Boolean(
-              editing && readHash === sourceHash(editing.source),
-            );
-            const inRepair = Boolean(repairing);
-            const editPermitted = permitsSourceEdit(task, inRepair);
-            const readStalled =
-              canEdit && editPermitted && readProgress.stalled;
-            if (readStalled && readProgress.takeNudge()) {
-              messages.push({
-                role: "system",
-                content:
-                  "刚才已连续三次成功读取同一版本、同一页源码，没有取得新信息。源码与哈希已在真实工具结果中，当前仍允许编辑。请现在调用edit_app_source提交最小修改；若确实缺少别处信息，先search_app_source定位不同区域。read_app_source暂不列出，以免继续原地循环；这不是正常100轮额度耗尽，也不允许跳过哈希或已读范围检查。",
-              });
-            }
-            const upstream = await requestAgentStream(
-              loggedTransport,
-              `${config.baseUrl.replace(/\/$/, "")}/chat/completions`,
-              {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  ...(config.apiKey
-                    ? { Authorization: `Bearer ${config.apiKey}` }
-                    : {}),
-                },
-                signal: abort.signal,
-                body: JSON.stringify({
-                  model: config.model,
-                  messages,
-                  tools: [
-                    ...(repairing ||
-                    previewRepairBlock ||
-                    !needsNoteTools(
-                      task,
-                      body.content,
-                      Boolean(snapshot.elements.length),
-                    )
-                      ? []
-                      : NOTE_TOOLS),
-                    ...(editing
-                      ? APP_SOURCE_TOOLS.filter(
-                          (tool) =>
-                            (!inRepair ||
-                              tool.function.name !== "search_app_source") &&
-                            (!readStalled ||
-                              tool.function.name !== "read_app_source") &&
-                            (tool.function.name !== "edit_app_source" ||
-                              (canEdit && editPermitted)),
-                        )
-                      : []),
-                  ],
-                  stream: true,
-                  max_tokens: 32768,
-                  chat_template_kwargs: { enable_thinking: thinking },
-                }),
-              },
-            );
-            if (!upstream.ok || !upstream.body) {
-              const detail = await upstream.text().catch(() => "");
-              if (/admission|waiting.*admit/i.test(detail)) {
-                throw new Error(
-                  "上游排队等待超时，模型尚未开始处理；请稍后手动重试",
-                );
-              }
-              throw new Error(`模型服务返回错误 ${upstream.status}`);
-            }
-            for await (const event of readSSE(upstream.body)) {
-              log.frame(event.data);
-              if (event.data === "[DONE]") {
-                break;
-              }
-              const chunk = JSON.parse(event.data);
-              if (chunk.error) {
-                if (
-                  /admission|waiting.*admit/i.test(String(chunk.error.message))
-                ) {
-                  throw new Error(
-                    "上游排队等待超时，已保留收到的内容；请稍后手动重试",
-                  );
-                }
-                throw new Error(
-                  `模型流式响应失败：${String(
-                    chunk.error.message || "上游服务错误",
-                  ).slice(0, 300)}`,
-                );
-              }
-              const choice = chunk.choices?.[0];
-              if (!choice) {
-                continue;
-              }
-              if (choice.finish_reason) {
-                finish = choice.finish_reason;
-              }
-              const delta = choice.delta || {};
-              if (
-                delta.content ||
-                delta.reasoning_content ||
-                delta.tool_calls?.length ||
-                choice.finish_reason
-              ) {
-                armIdle(90000);
-              }
-              if (
-                typeof delta.reasoning_content === "string" &&
-                delta.reasoning_content
-              ) {
-                reasoning += delta.reasoning_content;
-                assistant.reasoning =
-                  (assistant.reasoning || "") + delta.reasoning_content;
-                dirty = true;
-                if (assistant.reasoning.length > 100000) {
-                  throw new Error("思考内容过长，已停止");
-                }
-                emit({ type: "reasoning", delta: delta.reasoning_content });
-                appendBlock("reasoning", delta.reasoning_content);
-              }
-              if (typeof delta.content === "string" && delta.content) {
-                content += delta.content;
-                dirty = true;
-                if (content.length > 524288) {
-                  throw new Error("回答过长，已停止");
-                }
-                emit({ type: "delta", delta: delta.content });
-                fence.push(delta.content);
-              }
-              for (const tool of delta.tool_calls || []) {
-                if (
-                  !Number.isInteger(tool.index) ||
-                  tool.index < 0 ||
-                  tool.index >= 16
-                ) {
-                  throw new Error("工具调用索引无效");
-                }
-                const call = tools.get(tool.index) || {
-                  id: "",
-                  type: "function" as const,
-                  function: { name: "", arguments: "" },
-                };
-                if (tool.id) {
-                  call.id = tool.id;
-                }
-                if (tool.function?.name) {
-                  call.function.name += tool.function.name;
-                }
-                if (tool.function?.arguments) {
-                  call.function.arguments += tool.function.arguments;
-                }
-                if (
-                  call.function.arguments.length > 131072 ||
-                  call.function.name.length > 100
-                ) {
-                  throw new Error("工具参数过大");
-                }
-                tools.set(tool.index, call);
-              }
-            }
-          }
-          log.endModel();
-          fence.finish();
-          prose.finish();
-          clearTimeout(idle);
-          await flushHtml();
-          if (abort.signal.aborted) {
-            throw abort.signal.reason;
-          }
-          if (
-            finish === "length" &&
-            currentHtml &&
-            !editingMode &&
-            continuations < 2
-          ) {
-            toolBudget.assertAvailable();
-            continuations++;
-            protocolRecovery = true;
-            const draft = htmlDrafts.get(currentHtml.ref.artifactId)!;
             messages.push({
-              role: "assistant",
-              content: `\`\`\`html\n${draft.source}`,
+              role: "tool",
+              tool_call_id: tool.id,
+              content: executed.text,
             });
-            messages.push({
-              role: "system",
-              content:
-                "源码输出因单次长度限制中断。继续刚才HTML的下一个字符，不重复任何已有源码，不重新打开html围栏；补全后用结束围栏关闭。已有界面和输入保持在同一实例中。先完成核心逻辑，不增加额外装饰。",
+            log.record("tool_result", {
+              toolCallId: tool.id,
+              name: tool.function.name,
+              reused: true,
+              modelContent: executed.text,
             });
-            appendBlock("text", "正在自动补全尚未完成的应用…\n");
-            continue;
+            return executed.text;
           }
-          if (tools.size) {
-            const uniqueCalls = new Map<
-              string,
-              typeof tools extends Map<number, infer T> ? T : never
-            >();
-            for (const tool of tools.values()) {
-              const previous = uniqueCalls.get(tool.id);
-              if (
-                !tool.id ||
-                (previous &&
-                  JSON.stringify(previous.function) !==
-                    JSON.stringify(tool.function))
-              ) {
-                throw new Error("工具调用标识无效或重复标识参数不一致");
-              }
-              uniqueCalls.set(tool.id, tool);
-            }
-            const toolCalls = [...uniqueCalls.values()];
-            if (finish !== "tool_calls") {
+          const repairForCall = repairing;
+          if (repairForCall && tool.function.name === "edit_app_source") {
+            const progress = repairForCall.block.repair!;
+            if (progress.attempts >= HTML_SYNTAX_REPAIR_LIMIT) {
               throw new Error(
-                "模型工具响应不完整（结束标记不是 tool_calls），未执行本次工具；已有候选和草稿保留",
+                `自动修复已达${HTML_SYNTAX_REPAIR_LIMIT}次，草稿已保留，请手动继续修正`,
               );
             }
-            toolBudget.assertAvailable();
-            messages.push({
-              role: "assistant",
-              // Source lives in the scoped draft; do not resend the entire HTML as prose.
-              content: assistant.content.slice(responseTextStart) || null,
-              tool_calls: toolCalls,
-              ...(thinking ? { reasoning_content: reasoning } : {}),
-            });
-            let commandFailure = "";
-            let successfulCalls = 0;
-            let failedCalls = 0;
-            let successfulMutation = false;
-            for (const tool of toolCalls) {
-              const signature = JSON.stringify(tool.function);
-              const executed = executedTools.get(tool.id);
-              if (executed) {
-                if (executed.signature !== signature) {
-                  throw new Error("重复工具标识对应不同参数，已停止");
-                }
-                messages.push({
-                  role: "tool",
-                  tool_call_id: tool.id,
-                  content: executed.text,
-                });
-                log.record("tool_result", {
-                  toolCallId: tool.id,
-                  name: tool.function.name,
-                  reused: true,
-                  modelContent: executed.text,
-                });
-                continue;
+          }
+          const activity: ChatActivity = {
+            summary: "",
+            details: "",
+            id: tool.id,
+            name: tool.function.name,
+            status: "reading" as "reading" | "complete",
+            elementIds: [] as string[],
+            snapshotAt: snapshot.capturedAt,
+          };
+          assistant.activities!.push(activity);
+          const toolBlock: ChatBlock = {
+            id: randomUUID(),
+            type: "tool",
+            activityId: activity.id,
+          };
+          assistant.blocks!.push(toolBlock);
+          publishBlock(toolBlock);
+          emit({ type: "tool_start", activity });
+          log.record("tool_call", {
+            toolCallId: tool.id,
+            name: tool.function.name,
+            arguments: tool.function.arguments,
+          });
+          let result: Record<string, unknown>;
+          let failedSource: string | undefined;
+          try {
+            if (
+              APP_SOURCE_TOOLS.some(
+                (entry) => entry.function.name === tool.function.name,
+              )
+            ) {
+              if (!editing) {
+                throw new ChatError(400, "请先明确引用一个 HTML 应用");
               }
-              const repairForCall = repairing;
-              if (repairForCall && tool.function.name === "edit_app_source") {
-                const progress = repairForCall.block.repair!;
-                if (progress.attempts >= HTML_SYNTAX_REPAIR_LIMIT) {
-                  throw new Error(
-                    `自动修复已达${HTML_SYNTAX_REPAIR_LIMIT}次，草稿已保留，请手动继续修正`,
+              let args;
+              try {
+                args = JSON.parse(tool.function.arguments);
+              } catch {
+                throw new SourceToolError(
+                  400,
+                  "源码工具参数不是有效 JSON",
+                  "invalid_request",
+                );
+              }
+              validateSourceArguments(tool.function.name, args);
+              if (tool.function.name !== "edit_app_source") {
+                const baseline = args.revision === "baseline";
+                if (baseline && !htmlBase) {
+                  throw new SourceToolError(
+                    400,
+                    "新建任务没有修改前源码，请读取current候选",
+                    "invalid_request",
                   );
                 }
-              }
-              const activity: ChatActivity = {
-                summary: "",
-                details: "",
-                id: tool.id,
-                name: tool.function.name,
-                status: "reading" as "reading" | "complete",
-                elementIds: [] as string[],
-                snapshotAt: snapshot.capturedAt,
-              };
-              assistant.activities!.push(activity);
-              const toolBlock: ChatBlock = {
-                id: randomUUID(),
-                type: "tool",
-                activityId: activity.id,
-              };
-              assistant.blocks!.push(toolBlock);
-              publishBlock(toolBlock);
-              emit({ type: "tool_start", activity });
-              log.record("tool_call", {
-                toolCallId: tool.id,
-                name: tool.function.name,
-                arguments: tool.function.arguments,
-              });
-              let result: Record<string, unknown>;
-              let failedSource: string | undefined;
-              try {
+                const inspected = baseline ? htmlBase! : editing;
                 if (
-                  APP_SOURCE_TOOLS.some(
-                    (entry) => entry.function.name === tool.function.name,
+                  readProgress.blocked(
+                    tool.function.name,
+                    sourceHash(inspected.source),
+                    args,
                   )
                 ) {
-                  if (!editing) {
-                    throw new ChatError(400, "请先明确引用一个 HTML 应用");
-                  }
-                  let args;
-                  try {
-                    args = JSON.parse(tool.function.arguments);
-                  } catch {
-                    throw new SourceToolError(
-                      400,
-                      "源码工具参数不是有效 JSON",
-                      "invalid_request",
-                    );
-                  }
-                  validateSourceArguments(tool.function.name, args);
-                  if (tool.function.name !== "edit_app_source") {
-                    const baseline = args.revision === "baseline";
-                    if (baseline && !htmlBase) {
-                      throw new SourceToolError(
-                        400,
-                        "新建任务没有修改前源码，请读取current候选",
-                        "invalid_request",
+                  throw new SourceToolError(
+                    409,
+                    permitsSourceEdit(task, Boolean(repairing))
+                      ? "同一源码页已连续成功读取三次，重复读取不会推进任务。请使用已有sourceHash与源码调用edit_app_source，或搜索不同区域；未改变正式组件，也不重新计算正常轮次额度。"
+                      : "该页源码已连续成功读取三次，请根据已有内容解释或搜索其他区域。本轮只读，不能调用编辑工具。",
+                    "protocol",
+                  );
+                }
+                if (baseline) {
+                  readHash = null;
+                }
+                const start = args.startLine ?? 1;
+                const count = args.lineCount ?? 60;
+                const column = args.startColumn ?? 0;
+                if (
+                  !Number.isInteger(start) ||
+                  start < 1 ||
+                  !Number.isInteger(count) ||
+                  count < 1 ||
+                  count > 200 ||
+                  !Number.isSafeInteger(column) ||
+                  column < 0 ||
+                  column >
+                    (inspected.source.split("\n")[start - 1]?.length ?? 0)
+                ) {
+                  throw new SourceToolError(
+                    400,
+                    "源码分页参数无效",
+                    "invalid_request",
+                  );
+                }
+                const available = Math.min(
+                  6500,
+                  AGENT_SOURCE_READ_LIMIT - readChars - 700,
+                  contextLimit - JSON.stringify(messages).length - 1000,
+                );
+                if (available < 256) {
+                  throw new SourceToolError(
+                    422,
+                    "本轮阅读预算不足，请聚焦源码范围",
+                    "budget",
+                  );
+                }
+                const page =
+                  tool.function.name === "search_app_source"
+                    ? searchSource(inspected.source, args, available)
+                    : readSourcePage(
+                        inspected.source,
+                        start,
+                        count,
+                        available,
+                        column,
                       );
-                    }
-                    const inspected = baseline ? htmlBase! : editing;
-                    if (
-                      readProgress.blocked(
-                        tool.function.name,
-                        sourceHash(inspected.source),
-                        args,
-                      )
-                    ) {
+                if (tool.function.name === "read_app_source" && !baseline) {
+                  readHash = sourceHash(editing.source);
+                  const sourcePage = page as ReturnType<typeof readSourcePage>;
+                  readCoverage.record(editing.source, sourcePage);
+                }
+                result = {
+                  sourceHash: sourceHash(inspected.source),
+                  version: inspected.version,
+                  revision: baseline ? "baseline" : "current",
+                  ...(baseline ? { readonly: true } : {}),
+                  ...page,
+                };
+                readProgress.record(
+                  tool.function.name,
+                  sourceHash(inspected.source),
+                  args,
+                );
+              } else {
+                if (!permitsSourceEdit(task, Boolean(repairForCall))) {
+                  throw new SourceToolError(
+                    403,
+                    "本轮为只读问答，未授权源码修改；请只使用读取工具回答，不要重试编辑",
+                    "protocol",
+                  );
+                }
+                readProgress.editing();
+                if (!readHash || readHash !== args.sourceHash) {
+                  throw new SourceToolError(
+                    409,
+                    "必须先读取当前源码版本，再提交修改",
+                    "version_conflict",
+                  );
+                }
+                for (const edit of args.edits) {
+                  if (edit.startLine !== undefined) {
+                    const unread = readCoverage.firstUnread(
+                      readHash,
+                      edit.startLine,
+                      edit.endLine,
+                    );
+                    if (unread !== null) {
                       throw new SourceToolError(
                         409,
-                        permitsSourceEdit(task, Boolean(repairing))
-                          ? "同一源码页已连续成功读取三次，重复读取不会推进任务。请使用已有sourceHash与源码调用edit_app_source，或搜索不同区域；未改变正式组件，也不重新计算正常轮次额度。"
-                          : "该页源码已连续成功读取三次，请根据已有内容解释或搜索其他区域。本轮只读，不能调用编辑工具。",
-                        "protocol",
-                      );
-                    }
-                    if (baseline) {
-                      readHash = null;
-                    }
-                    const start = args.startLine ?? 1;
-                    const count = args.lineCount ?? 60;
-                    const column = args.startColumn ?? 0;
-                    if (
-                      !Number.isInteger(start) ||
-                      start < 1 ||
-                      !Number.isInteger(count) ||
-                      count < 1 ||
-                      count > 200 ||
-                      !Number.isSafeInteger(column) ||
-                      column < 0 ||
-                      column >
-                        (inspected.source.split("\n")[start - 1]?.length ?? 0)
-                    ) {
-                      throw new SourceToolError(
-                        400,
-                        "源码分页参数无效",
-                        "invalid_request",
-                      );
-                    }
-                    const available = Math.min(
-                      6500,
-                      AGENT_SOURCE_READ_LIMIT - readChars - 700,
-                      contextLimit - JSON.stringify(messages).length - 1000,
-                    );
-                    if (available < 256) {
-                      throw new SourceToolError(
-                        422,
-                        "本轮阅读预算不足，请聚焦源码范围",
-                        "budget",
-                      );
-                    }
-                    const page =
-                      tool.function.name === "search_app_source"
-                        ? searchSource(inspected.source, args, available)
-                        : readSourcePage(
-                            inspected.source,
-                            start,
-                            count,
-                            available,
-                            column,
-                          );
-                    if (tool.function.name === "read_app_source" && !baseline) {
-                      readHash = sourceHash(editing.source);
-                      const sourcePage = page as ReturnType<
-                        typeof readSourcePage
-                      >;
-                      readCoverage.record(editing.source, sourcePage);
-                    }
-                    result = {
-                      sourceHash: sourceHash(inspected.source),
-                      version: inspected.version,
-                      revision: baseline ? "baseline" : "current",
-                      ...(baseline ? { readonly: true } : {}),
-                      ...page,
-                    };
-                    readProgress.record(
-                      tool.function.name,
-                      sourceHash(inspected.source),
-                      args,
-                    );
-                  } else {
-                    if (!permitsSourceEdit(task, Boolean(repairForCall))) {
-                      throw new SourceToolError(
-                        403,
-                        "本轮为只读问答，未授权源码修改；请只使用读取工具回答，不要重试编辑",
-                        "protocol",
-                      );
-                    }
-                    readProgress.editing();
-                    if (!readHash || readHash !== args.sourceHash) {
-                      throw new SourceToolError(
-                        409,
-                        "必须先读取当前源码版本，再提交修改",
+                        `行范围包含尚未完整读取的源码：从第${unread}行起至第${edit.endLine}行。请read_app_source读取这些完整行（注意nextColumn分页），再提交修改`,
                         "version_conflict",
                       );
                     }
-                    for (const edit of args.edits) {
-                      if (edit.startLine !== undefined) {
-                        const unread = readCoverage.firstUnread(
-                          readHash,
-                          edit.startLine,
-                          edit.endLine,
-                        );
-                        if (unread !== null) {
-                          throw new SourceToolError(
-                            409,
-                            `行范围包含尚未完整读取的源码：从第${unread}行起至第${edit.endLine}行。请read_app_source读取这些完整行（注意nextColumn分页），再提交修改`,
-                            "version_conflict",
-                          );
-                        }
-                      }
-                    }
-                    const source = replaceSource(
-                      editing.source,
-                      args.sourceHash,
-                      args.edits,
-                    );
-                    if (source === editing.source) {
-                      throw new SourceToolError(
-                        422,
-                        "替换没有改变任何源码，请提交实现用户要求的实际修改",
-                        "replacement",
-                      );
-                    }
-                    failedSource = source;
-                    if (repairForCall) {
-                      // Invalid parameters, stale hashes and unmatched text are
-                      // tool retries, not submitted syntax-repair candidates.
-                      repairForCall.block.repair!.attempts++;
-                      publishBlock(repairForCall.block);
-                    }
-                    validateAppSource(source);
-                    const canvasTarget = workspace?.kind === "element";
-                    const id =
-                      canvasTarget && editing === htmlBase && !htmlBase.editBase
-                        ? randomUUID()
-                        : editing.artifactId;
-                    let version =
-                      id === editing.artifactId ? editing.version + 1 : 1;
-                    while (
-                      await htmlStore.readApp(noteId, id, version).then(
-                        () => true,
-                        (e) => {
-                          if (e.status === 404) {
-                            return false;
-                          }
-                          throw e;
-                        },
-                      )
-                    ) {
-                      version++;
-                    }
-                    const candidate: HtmlArtifact = {
-                      ...editing,
-                      artifactId: id,
-                      version,
-                      sessionId,
-                      noteId,
-                      source,
-                      sourceHash: sourceHash(source),
-                      parentVersion: editing.version,
-                      editBase:
-                        htmlBase && task !== "create"
-                          ? turnWorkspace?.base ||
-                            htmlBase.editBase || {
-                              kind: "html",
-                              artifactId: htmlBase.artifactId,
-                              version: htmlBase.version,
-                            }
-                          : undefined,
-                      revision: 0,
-                      createdAt: Date.now(),
-                      complete: true,
-                      styleDiagnostics: diagnoseStyles(source),
-                      recovery: undefined,
-                      candidateNumber:
-                        (turnWorkspace?.candidateNumber ||
-                          editing.candidateNumber ||
-                          0) + 1,
-                      changes: repairForCall
-                        ? sourceDifference(repairForCall.baseSource, source)
-                        : sourceDifference(
-                            task === "create"
-                              ? editing.source
-                              : originalSource || editing.source,
-                            source,
-                          ),
-                      ...(repairForCall
-                        ? {
-                            repair: {
-                              ...repairForCall.block.repair!,
-                              status: "succeeded" as const,
-                            },
-                            state: (
-                              await htmlStore.read(
-                                noteId,
-                                sessionId,
-                                repairForCall.draft.artifactId,
-                                repairForCall.draft.version,
-                              )
-                            ).state,
-                          }
-                        : {}),
-                    };
-                    await htmlStore.write(candidate);
-                    failedSource = undefined;
-                    editing = candidate;
-                    readHash = null;
-                    const block: Extract<ChatBlock, { type: "html" }> = {
-                      id:
-                        repairForCall?.block.id ||
-                        previewRepairBlock?.id ||
-                        randomUUID(),
-                      type: "html",
-                      ref: { kind: "html", artifactId: id, version },
-                      complete: true,
-                      saved: true,
-                      runtimeVersion: candidate.runtimeVersion,
-                      initialState: candidate.state,
-                      candidateNumber: candidate.candidateNumber,
-                      ...(repairForCall ? { repair: candidate.repair } : {}),
-                    };
-                    if (repairForCall) {
-                      Object.assign(repairForCall.block, block, {
-                        error: undefined,
-                        source: undefined,
-                      });
-                      repairing = undefined;
-                    } else if (previewRepairBlock) {
-                      Object.assign(previewRepairBlock, block, {
-                        source: undefined,
-                        error: undefined,
-                      });
-                    } else {
-                      assistant.blocks!.push(block);
-                    }
-                    previews.expect(id, version);
-                    await persist();
-                    lastCandidate = candidate;
-                    if (turnWorkspace && task !== "create") {
-                      turnWorkspace.head = {
-                        kind: "html",
-                        artifactId: id,
-                        version,
-                      };
-                      turnWorkspace.candidateNumber =
-                        candidate.candidateNumber!;
-                      const next = structuredClone(turnWorkspace);
-                      const updated = await store.update(
-                        noteId,
-                        sessionId,
-                        (current) => {
-                          if (
-                            current.appWorkspace?.generation === next.generation
-                          ) {
-                            current.appWorkspace = next;
-                          }
-                        },
-                      );
-                      emit({
-                        type: "workspace",
-                        workspace: updated.appWorkspace,
-                        revision: updated.revision,
-                      });
-                    }
-                    publishBlock(block);
-                    result = {
-                      artifactId: id,
-                      version,
-                      sourceHash: candidate.sourceHash,
-                      styleDiagnostics: candidate.styleDiagnostics,
-                      summary:
-                        "源码局部修改已保存为候选，尚未应用。用户可预览差异并确认。",
-                    };
                   }
-                } else if (
-                  CHAT_WIDGET_TOOLS.some(
-                    (entry) => entry.function.name === tool.function.name,
-                  )
-                ) {
-                  throw new ChatError(
-                    410,
-                    "旧 JSON 作品仅保留只读展示，请通过 HTML 源码工具创建修改候选。",
-                  );
-                } else {
-                  if (readChars >= 24000) {
-                    throw new Error("本轮累计阅读达到 24000 字符，请聚焦问题");
-                  }
-                  result = readNoteTool(
-                    snapshot,
-                    tool.function.name,
-                    JSON.parse(tool.function.arguments),
-                    Math.min(8000, 24000 - readChars),
+                }
+                const source = replaceSource(
+                  editing.source,
+                  args.sourceHash,
+                  args.edits,
+                );
+                if (source === editing.source) {
+                  throw new SourceToolError(
+                    422,
+                    "替换没有改变任何源码，请提交实现用户要求的实际修改",
+                    "replacement",
                   );
                 }
-              } catch (error) {
-                if (failedSource && editing) {
-                  const draft: HtmlArtifact = {
-                    ...editing,
-                    artifactId: repairForCall?.draft.artifactId || randomUUID(),
-                    version: repairForCall?.draft.version || 1,
+                failedSource = source;
+                if (repairForCall) {
+                  // Invalid parameters, stale hashes and unmatched text are
+                  // tool retries, not submitted syntax-repair candidates.
+                  repairForCall.block.repair!.attempts++;
+                  publishBlock(repairForCall.block);
+                }
+                validateAppSource(source);
+                const canvasTarget = workspace?.kind === "element";
+                const id =
+                  canvasTarget && editing === htmlBase && !htmlBase.editBase
+                    ? randomUUID()
+                    : editing.artifactId;
+                let version =
+                  id === editing.artifactId ? editing.version + 1 : 1;
+                while (
+                  await htmlStore.readApp(noteId, id, version).then(
+                    () => true,
+                    (e) => {
+                      if (e.status === 404) {
+                        return false;
+                      }
+                      throw e;
+                    },
+                  )
+                ) {
+                  version++;
+                }
+                const candidate: HtmlArtifact = {
+                  ...editing,
+                  artifactId: id,
+                  version,
+                  sessionId,
+                  noteId,
+                  source,
+                  sourceHash: sourceHash(source),
+                  parentVersion: editing.version,
+                  editBase:
+                    htmlBase && task !== "create"
+                      ? turnWorkspace?.base ||
+                        htmlBase.editBase || {
+                          kind: "html",
+                          artifactId: htmlBase.artifactId,
+                          version: htmlBase.version,
+                        }
+                      : undefined,
+                  revision: 0,
+                  createdAt: Date.now(),
+                  complete: true,
+                  styleDiagnostics: diagnoseStyles(source),
+                  recovery: undefined,
+                  candidateNumber:
+                    (turnWorkspace?.candidateNumber ||
+                      editing.candidateNumber ||
+                      0) + 1,
+                  changes: repairForCall
+                    ? sourceDifference(repairForCall.baseSource, source)
+                    : sourceDifference(
+                        task === "create"
+                          ? editing.source
+                          : originalSource || editing.source,
+                        source,
+                      ),
+                  ...(repairForCall
+                    ? {
+                        repair: {
+                          ...repairForCall.block.repair!,
+                          status: "succeeded" as const,
+                        },
+                        state: (
+                          await htmlStore.read(
+                            noteId,
+                            sessionId,
+                            repairForCall.draft.artifactId,
+                            repairForCall.draft.version,
+                          )
+                        ).state,
+                      }
+                    : {}),
+                };
+                await htmlStore.write(candidate);
+                failedSource = undefined;
+                editing = candidate;
+                readHash = null;
+                const block: Extract<ChatBlock, { type: "html" }> = {
+                  id:
+                    repairForCall?.block.id ||
+                    previewRepairBlock?.id ||
+                    randomUUID(),
+                  type: "html",
+                  ref: { kind: "html", artifactId: id, version },
+                  complete: true,
+                  saved: true,
+                  runtimeVersion: candidate.runtimeVersion,
+                  initialState: candidate.state,
+                  candidateNumber: candidate.candidateNumber,
+                  ...(repairForCall ? { repair: candidate.repair } : {}),
+                };
+                if (repairForCall) {
+                  Object.assign(repairForCall.block, block, {
+                    error: undefined,
+                    source: undefined,
+                  });
+                  repairing = undefined;
+                } else if (previewRepairBlock) {
+                  Object.assign(previewRepairBlock, block, {
+                    source: undefined,
+                    error: undefined,
+                  });
+                } else {
+                  assistant.blocks!.push(block);
+                }
+                previews.expect(id, version);
+                await persist();
+                lastCandidate = candidate;
+                if (turnWorkspace && task !== "create") {
+                  turnWorkspace.head = {
+                    kind: "html",
+                    artifactId: id,
+                    version,
+                  };
+                  turnWorkspace.candidateNumber = candidate.candidateNumber!;
+                  const next = structuredClone(turnWorkspace);
+                  const updated = await store.update(
                     noteId,
                     sessionId,
-                    source: failedSource,
-                    complete: false,
-                    revision: 0,
-                    createdAt: Date.now(),
-                    recovery: recoveryInfo(
-                      (error as Error).message,
-                      sourceErrorCode(error),
-                    ),
+                    (current) => {
+                      if (
+                        current.appWorkspace?.generation === next.generation
+                      ) {
+                        current.appWorkspace = next;
+                      }
+                    },
+                  );
+                  emit({
+                    type: "workspace",
+                    workspace: updated.appWorkspace,
+                    revision: updated.revision,
+                  });
+                }
+                publishBlock(block);
+                result = {
+                  artifactId: id,
+                  version,
+                  sourceHash: candidate.sourceHash,
+                  styleDiagnostics: candidate.styleDiagnostics,
+                  summary:
+                    "源码局部修改已保存为候选，尚未应用。用户可预览差异并确认。",
+                };
+              }
+            } else if (
+              CHAT_WIDGET_TOOLS.some(
+                (entry) => entry.function.name === tool.function.name,
+              )
+            ) {
+              throw new ChatError(
+                410,
+                "旧 JSON 作品仅保留只读展示，请通过 HTML 源码工具创建修改候选。",
+              );
+            } else {
+              if (readChars >= 24000) {
+                throw new Error("本轮累计阅读达到 24000 字符，请聚焦问题");
+              }
+              result = readNoteTool(
+                snapshot,
+                tool.function.name,
+                JSON.parse(tool.function.arguments),
+                Math.min(8000, 24000 - readChars),
+              );
+            }
+          } catch (error) {
+            if (failedSource && editing) {
+              const draft: HtmlArtifact = {
+                ...editing,
+                artifactId: repairForCall?.draft.artifactId || randomUUID(),
+                version: repairForCall?.draft.version || 1,
+                noteId,
+                sessionId,
+                source: failedSource,
+                complete: false,
+                revision: 0,
+                createdAt: Date.now(),
+                recovery: recoveryInfo(
+                  (error as Error).message,
+                  sourceErrorCode(error),
+                ),
+              };
+              try {
+                const block: Extract<ChatBlock, { type: "html" }> = {
+                  id: repairForCall?.block.id || randomUUID(),
+                  type: "html",
+                  ref: {
+                    kind: "html",
+                    artifactId: draft.artifactId,
+                    version: draft.version,
+                  },
+                  complete: false,
+                  draftSaved: true,
+                  error: draft.recovery!.error,
+                  runtimeVersion: draft.runtimeVersion,
+                };
+                if (repairForCall) {
+                  block.repair = {
+                    ...repairForCall.block.repair!,
+                    error: (error as Error).message,
                   };
-                  try {
-                    const block: Extract<ChatBlock, { type: "html" }> = {
-                      id: repairForCall?.block.id || randomUUID(),
-                      type: "html",
-                      ref: {
-                        kind: "html",
-                        artifactId: draft.artifactId,
-                        version: draft.version,
-                      },
-                      complete: false,
-                      draftSaved: true,
-                      error: draft.recovery!.error,
-                      runtimeVersion: draft.runtimeVersion,
-                    };
-                    if (repairForCall) {
-                      block.repair = {
-                        ...repairForCall.block.repair!,
-                        error: (error as Error).message,
-                      };
-                      Object.assign(repairForCall.block, block);
-                      draft.repair = block.repair;
-                    } else {
-                      assistant.blocks!.push(block);
-                      if (error instanceof AppSyntaxError) {
-                        queueRepair(
-                          draft,
-                          block,
-                          error,
-                          originalSource || htmlBase?.source || editing.source,
-                        );
-                      }
-                    }
-                    const stored = await htmlStore.write(draft);
-                    if (repairForCall) {
-                      repairForCall.draft = stored;
-                      editing = stored;
-                      readHash = null;
-                    } else {
-                      const job = repairJobs.find(
-                        (entry) => entry.block === block,
-                      );
-                      if (job) {
-                        job.draft = stored;
-                      }
-                    }
-                    await persist();
-                    publishBlock(block);
-                  } catch (storageError) {
-                    throw new Error(
-                      `失败草稿尚未保存：${(storageError as Error).message}`,
+                  Object.assign(repairForCall.block, block);
+                  draft.repair = block.repair;
+                } else {
+                  assistant.blocks!.push(block);
+                  if (error instanceof AppSyntaxError) {
+                    queueRepair(
+                      draft,
+                      block,
+                      error,
+                      originalSource || htmlBase?.source || editing.source,
                     );
                   }
                 }
+                const stored = await htmlStore.write(draft);
                 if (repairForCall) {
+                  repairForCall.draft = stored;
+                  editing = stored;
                   readHash = null;
-                  repairForCall.block.repair!.error = (error as Error).message;
-                  if (["storage", "budget"].includes(sourceErrorCode(error))) {
-                    activity.status = "failed";
-                    activity.errorCode = sourceErrorCode(error);
-                    activity.summary = "自动修复已停止";
-                    activity.details = (error as Error).message;
-                    emit({ type: "tool_end", activity });
-                    throw error;
+                } else {
+                  const job = repairJobs.find((entry) => entry.block === block);
+                  if (job) {
+                    job.draft = stored;
                   }
                 }
-                if (tool.function.name === explicitWidgetTool) {
-                  commandFailure = (error as Error).message;
-                }
-                if (
-                  CHAT_WIDGET_TOOLS.some(
-                    (entry) => entry.function.name === tool.function.name,
-                  )
-                ) {
-                  emit({
-                    type: "widget_error",
-                    toolCallId: tool.id,
-                    error: (error as Error).message,
-                  });
-                }
-                const isGeneration =
-                  tool.function.name === "create_widget_draft" ||
-                  tool.function.name === "revise_widget_draft";
-                result = {
-                  error: (error as Error).message,
-                  errorCode: sourceErrorCode(error),
-                  ...(isGeneration && {
-                    retryable: !abort.signal.aborted,
-                    guidance: abort.signal.aborted
-                      ? "本轮已停止，已有候选保留。"
-                      : "可根据错误在本轮重新调用组件工具，无需用户另发消息；没有组件生成数量配额。",
-                  }),
-                };
+                await persist();
+                publishBlock(block);
+              } catch (storageError) {
+                throw new Error(
+                  `失败草稿尚未保存：${(storageError as Error).message}`,
+                );
               }
-              let text = JSON.stringify(result);
-              const sourceCommand = APP_SOURCE_TOOLS.some(
-                (toolType) => toolType.function.name === tool.function.name,
-              );
-              const mutationResult = tool.function.name === "edit_app_source";
-              if (
-                !sourceCommand &&
-                (text.length > 8000 || readChars + text.length > 24000)
-              ) {
-                text = JSON.stringify({
-                  error: "阅读预算已达上限，请缩小范围或分页",
-                });
+            }
+            if (repairForCall) {
+              readHash = null;
+              repairForCall.block.repair!.error = (error as Error).message;
+              if (["storage", "budget"].includes(sourceErrorCode(error))) {
+                activity.status = "failed";
+                activity.errorCode = sourceErrorCode(error);
+                activity.summary = "自动修复已停止";
+                activity.details = (error as Error).message;
+                emit({ type: "tool_end", activity });
+                throw error;
               }
-              if (!mutationResult) {
-                readChars += text.length;
-              }
-              if (
-                !sourceCommand &&
-                JSON.stringify(messages).length + text.length > contextLimit
-              ) {
-                text = JSON.stringify({
-                  error: "本轮上下文预算已满，请根据已有资料回答",
-                });
-              }
-              messages.push({
-                role: "tool",
-                tool_call_id: tool.id,
-                content: text,
-              });
-              log.record("tool_result", {
+            }
+            if (tool.function.name === explicitWidgetTool) {
+              commandFailure = (error as Error).message;
+            }
+            if (
+              CHAT_WIDGET_TOOLS.some(
+                (entry) => entry.function.name === tool.function.name,
+              )
+            ) {
+              emit({
+                type: "widget_error",
                 toolCallId: tool.id,
-                name: tool.function.name,
-                result,
-                modelContent: text,
+                error: (error as Error).message,
               });
-              executedTools.set(tool.id, { signature, text });
-              activity.status = result.error ? "failed" : "complete";
-              if (mutationResult && !result.error) {
-                successfulMutation = true;
+            }
+            const isGeneration =
+              tool.function.name === "create_widget_draft" ||
+              tool.function.name === "revise_widget_draft";
+            result = {
+              error: (error as Error).message,
+              errorCode: sourceErrorCode(error),
+              ...(isGeneration && {
+                retryable: !abort.signal.aborted,
+                guidance: abort.signal.aborted
+                  ? "本轮已停止，已有候选保留。"
+                  : "可根据错误在本轮重新调用组件工具，无需用户另发消息；没有组件生成数量配额。",
+              }),
+            };
+          }
+          let text = JSON.stringify(result);
+          const sourceCommand = APP_SOURCE_TOOLS.some(
+            (toolType) => toolType.function.name === tool.function.name,
+          );
+          const mutationResult = tool.function.name === "edit_app_source";
+          if (
+            !sourceCommand &&
+            (text.length > 8000 || readChars + text.length > 24000)
+          ) {
+            text = JSON.stringify({
+              error: "阅读预算已达上限，请缩小范围或分页",
+            });
+          }
+          if (!mutationResult) {
+            readChars += text.length;
+          }
+          if (
+            !sourceCommand &&
+            JSON.stringify(messages).length + text.length > contextLimit
+          ) {
+            text = JSON.stringify({
+              error: "本轮上下文预算已满，请根据已有资料回答",
+            });
+          }
+          messages.push({
+            role: "tool",
+            tool_call_id: tool.id,
+            content: text,
+          });
+          log.record("tool_result", {
+            toolCallId: tool.id,
+            name: tool.function.name,
+            result,
+            modelContent: text,
+          });
+          executedTools.set(tool.id, { signature, text });
+          activity.status = result.error ? "failed" : "complete";
+          if (mutationResult && !result.error) {
+            successfulMutation = true;
+          }
+          if (result.error) {
+            failedCalls++;
+          } else {
+            successfulCalls++;
+          }
+          if (!result.error) {
+            for (const entry of assistant.blocks!) {
+              if (
+                entry.type === "protocol" &&
+                entry.status === "correcting" &&
+                entry.text.match(
+                  /<function(?:=|\s+name=["']?)([a-z_]+)/,
+                )?.[1] === tool.function.name
+              ) {
+                entry.status = "resolved";
+                publishBlock(entry);
               }
-              if (result.error) {
-                failedCalls++;
-              } else {
-                successfulCalls++;
+            }
+          }
+          activity.errorCode = result.error
+            ? String(result.errorCode || "tool")
+            : undefined;
+          activity.elementIds = (result.elementIds || []) as string[];
+          activity.summary = activity.elementIds
+            .slice(0, 3)
+            .map((id) =>
+              elementTitle(
+                snapshot.elements.find((element) => element.id === id)!,
+              ),
+            )
+            .join("、");
+          const isGeneration =
+            tool.function.name === "create_widget_draft" ||
+            tool.function.name === "revise_widget_draft";
+          if (tool.function.name === "read_app_source" && !result.error) {
+            activity.summary = `已读取${
+              result.revision === "baseline" ? "修改前" : ""
+            }源码第 ${result.startLine}–${result.endLine} 行`;
+          }
+          if (tool.function.name === "search_app_source" && !result.error) {
+            activity.summary = `已搜索${
+              result.revision === "baseline" ? "修改前" : "当前"
+            }源码，返回 ${(result.matches as unknown[]).length} 处匹配`;
+          }
+          if (mutationResult && !result.error) {
+            activity.summary = "修改候选已保存，等待确认";
+          }
+          if (isGeneration && !result.error) {
+            activity.summary = "组件候选已生成并保存";
+          }
+          if (result.error) {
+            activity.details = String(result.error).slice(0, 16000);
+            activity.summary = `${
+              mutationResult
+                ? "源码修改失败"
+                : isGeneration
+                ? "组件生成未完成"
+                : "读取未完成"
+            }：${String(result.error).slice(0, 120)}`;
+          }
+          emit({ type: "tool_end", activity });
+          // Metadata only; diagnostics deliberately exclude source and prompt text.
+          // eslint-disable-next-line no-console
+          console.info(
+            JSON.stringify({
+              event: "chat_source_tool",
+              noteId,
+              sessionId,
+              turnId: body.turnId,
+              tool: tool.function.name,
+              status: activity.status,
+              errorCode: activity.errorCode,
+              targetVersion: editing?.version,
+              readRevision: mutationResult ? undefined : result.revision,
+              readVersion: mutationResult ? undefined : result.version,
+              contextChars: JSON.stringify(messages).length,
+              contextLimit,
+              readChars,
+              candidateSaved: mutationResult && !result.error,
+              repairAttempt: repairForCall?.block.repair?.attempts,
+              normalToolRounds: toolBudget.normalRounds,
+              recoveryToolRounds: toolBudget.recoveryRounds,
+            }),
+          );
+          dirty = true;
+
+          return text;
+        };
+        const availableTools = () => {
+          const canEdit = Boolean(
+            editing && readHash === sourceHash(editing.source),
+          );
+          const inRepair = Boolean(repairing);
+          const editPermitted = permitsSourceEdit(task, inRepair);
+          const readStalled = canEdit && editPermitted && readProgress.stalled;
+          if (readStalled && readProgress.takeNudge()) {
+            messages.push({
+              role: "system",
+              content:
+                "同一源码页已连续三次成功读取。请使用已有哈希编辑，或搜索其他区域；不要重复读取同一页。",
+            });
+          }
+          return [
+            ...(repairing ||
+            previewRepairBlock ||
+            !needsNoteTools(
+              task,
+              body.content,
+              Boolean(snapshot.elements.length),
+            )
+              ? []
+              : NOTE_TOOLS),
+            ...(editing
+              ? APP_SOURCE_TOOLS.filter(
+                  (tool) =>
+                    (!inRepair || tool.function.name !== "search_app_source") &&
+                    (!readStalled ||
+                      tool.function.name !== "read_app_source") &&
+                    (tool.function.name !== "edit_app_source" ||
+                      (canEdit && editPermitted)),
+                )
+              : []),
+          ];
+        };
+        await runNoteAgent({
+          directory,
+          noteId,
+          sessionId,
+          turnId: body.turnId,
+          assistantMessageId: assistant.id,
+          userContent: body.content,
+          uiMessageIds: session.messages
+            .slice(0, -1)
+            .map((message) => message.id),
+          config,
+          thinking,
+          signal: abort.signal,
+          transport: loggedTransport,
+          log,
+          messages,
+          tools: [...NOTE_TOOLS, ...APP_SOURCE_TOOLS],
+          availableTools,
+          executeTool,
+          onRejectedTool: (call, error, errorCode) => {
+            toolBudget.assertAvailable();
+            failedCalls++;
+            const activity: ChatActivity = {
+              id: call.id,
+              name: call.function.name,
+              status: "failed",
+              errorCode,
+              elementIds: [],
+              snapshotAt: snapshot.capturedAt,
+              summary: "工具调用未通过校验，未执行",
+              details: error,
+            };
+            assistant.activities!.push(activity);
+            const block: ChatBlock = {
+              id: randomUUID(),
+              type: "tool",
+              activityId: call.id,
+            };
+            assistant.blocks!.push(block);
+            publishBlock(block);
+            emit({ type: "tool_end", activity });
+            dirty = true;
+          },
+          checkpoint: () =>
+            checkpointPiProjection(directory, noteId, sessionId, assistant),
+          beforeResponse: () => {
+            round++;
+            fence.beginResponse();
+            tools.clear();
+            responseTextStart = assistant.content.length;
+            successfulCalls = failedCalls = 0;
+            successfulMutation = false;
+            commandFailure = "";
+            recoveryRound =
+              Boolean(repairing || previewRepairBlock) || protocolRecovery;
+            protocolRecovery = false;
+            armIdle(60000);
+          },
+          onStatus: (status) => {
+            assistant.runtimeStatus = status;
+            emit({ type: "runtime_status", runtimeStatus: status });
+          },
+          onText: (delta) => {
+            armIdle(90000);
+            dirty = true;
+            emit({ type: "delta", delta });
+            fence.push(delta);
+          },
+          onThinking: (delta) => {
+            armIdle(90000);
+            assistant.reasoning = (assistant.reasoning || "") + delta;
+            if (assistant.reasoning.length > 100000) {
+              throw new Error("思考内容过长，已停止");
+            }
+            dirty = true;
+            emit({ type: "reasoning", delta });
+            appendBlock("reasoning", delta);
+          },
+          afterResponse: async (response) => {
+            finish = response.finish;
+            response.tools.forEach((tool, index) => tools.set(index, tool));
+            log.endModel();
+            fence.finish();
+            prose.finish();
+            clearTimeout(idle);
+            await flushHtml();
+            if (abort.signal.aborted) {
+              throw abort.signal.reason;
+            }
+            if (
+              finish === "length" &&
+              currentHtml &&
+              !editingMode &&
+              continuations < 2
+            ) {
+              toolBudget.assertAvailable();
+              continuations++;
+              protocolRecovery = true;
+              const draft = htmlDrafts.get(currentHtml.ref.artifactId)!;
+              messages.push({
+                role: "assistant",
+                content: `\`\`\`html\n${draft.source}`,
+              });
+              messages.push({
+                role: "system",
+                content:
+                  "源码输出因单次长度限制中断。继续刚才HTML的下一个字符，不重复任何已有源码，不重新打开html围栏；补全后用结束围栏关闭。已有界面和输入保持在同一实例中。先完成核心逻辑，不增加额外装饰。",
+              });
+              appendBlock("text", "正在自动补全尚未完成的应用…\n");
+              return true;
+            }
+            if (tools.size) {
+              toolBudget.assertAvailable();
+              toolBudget.record(successfulCalls, failedCalls, recoveryRound);
+              if (
+                previewRepairBlock &&
+                successfulMutation &&
+                !failedCalls &&
+                !repairing
+              ) {
+                const review = await reviewPreview(responseTextStart);
+                if (review === "retry") {
+                  return true;
+                }
+                if (review === "passed") {
+                  completed = true;
+                  return false;
+                }
               }
-              if (!result.error) {
-                for (const entry of assistant.blocks!) {
-                  if (
-                    entry.type === "protocol" &&
-                    entry.status === "correcting" &&
-                    entry.text.match(
-                      /<function(?:=|\s+name=["']?)([a-z_]+)/,
-                    )?.[1] === tool.function.name
-                  ) {
-                    entry.status = "resolved";
-                    publishBlock(entry);
+              if (
+                repairing &&
+                repairing.block.repair!.attempts >= HTML_SYNTAX_REPAIR_LIMIT
+              ) {
+                throw new Error(
+                  `自动修复已达${HTML_SYNTAX_REPAIR_LIMIT}次，草稿已保留：${
+                    repairing.block.repair!.error
+                  }`,
+                );
+              }
+              if (
+                !repairing &&
+                repairJobs.some((job) => job.block.repair?.status === "pending")
+              ) {
+                activateRepair();
+              } else if (
+                !repairing &&
+                !previewRepairBlock &&
+                repairJobs.some(
+                  (job) => job.block.repair?.status === "succeeded",
+                )
+              ) {
+                if ((await reviewPreview(responseTextStart)) === "retry") {
+                  return true;
+                }
+                completed = true;
+                return false;
+              }
+              if (
+                round === 0 &&
+                explicitWidgetTool &&
+                !retainedArtifacts.length
+              ) {
+                if (commandFailure) {
+                  throw new Error(commandFailure);
+                }
+                // A saved card is the authoritative command result. Do not spend
+                // another model request merely to invent a success confirmation.
+                completed = true;
+                return false;
+              }
+            } else {
+              if (finish !== "stop") {
+                throw new Error(
+                  finish === "length"
+                    ? "回答达到本次输出上限（32768 tokens，包含思考），已保留内容；可手动继续"
+                    : "模型连接提前结束，部分内容已保留",
+                );
+              }
+              const pseudo = assistant.blocks!.filter(
+                (b) => b.type === "protocol" && b.status === "pending",
+              );
+              if (pseudo.length && !repairing && protocolCorrections === 0) {
+                toolBudget.assertAvailable();
+                protocolCorrections++;
+                protocolRecovery = true;
+                for (const block of pseudo) {
+                  if (block.type === "protocol") {
+                    block.status = "correcting";
+                    publishBlock(block);
                   }
                 }
+                messages.push({
+                  role: "assistant",
+                  content: assistant.content
+                    .slice(responseTextStart)
+                    .slice(-16000),
+                });
+                messages.push({
+                  role: "system",
+                  content: `你将工具调用写成了普通正文，这些操作没有执行。只能通过接口的真实 tool_calls 执行，不要再次输出 XML 伪调用，不要输出整份 HTML。当前编辑版本：${JSON.stringify(
+                    {
+                      artifactId: editing?.artifactId,
+                      version: editing?.version,
+                      sourceHash: editing
+                        ? sourceHash(editing.source)
+                        : undefined,
+                      target: editing?.target,
+                    },
+                  )}。已保存候选保留；${
+                    editing && permitsSourceEdit(task, false)
+                      ? "先 read_app_source 读取当前版本，再真实调用 edit_app_source 完成尚未执行的局部修改。"
+                      : editing
+                      ? "本轮为只读问答，edit_app_source不可用。不要重试编辑，只用当前可用读取工具回答，不得声称已修改。"
+                      : "仅使用当前可用工具完成尚未执行的操作，不要虚构工具或操作结果。"
+                  }这是本轮唯一一次协议纠偏，不能仅声称成功。`,
+                });
+                return true;
               }
-              activity.errorCode = result.error
-                ? String(result.errorCode || "tool")
-                : undefined;
-              activity.elementIds = (result.elementIds || []) as string[];
-              activity.summary = activity.elementIds
-                .slice(0, 3)
-                .map((id) =>
-                  elementTitle(
-                    snapshot.elements.find((element) => element.id === id)!,
-                  ),
-                )
-                .join("、");
-              const isGeneration =
-                tool.function.name === "create_widget_draft" ||
-                tool.function.name === "revise_widget_draft";
-              if (tool.function.name === "read_app_source" && !result.error) {
-                activity.summary = `已读取${
-                  result.revision === "baseline" ? "修改前" : ""
-                }源码第 ${result.startLine}–${result.endLine} 行`;
+              if (repairing) {
+                throw new Error(
+                  "模型未提交局部修复，草稿已保留，可手动继续修正",
+                );
               }
-              if (tool.function.name === "search_app_source" && !result.error) {
-                activity.summary = `已搜索${
-                  result.revision === "baseline" ? "修改前" : "当前"
-                }源码，返回 ${(result.matches as unknown[]).length} 处匹配`;
+              if (
+                !currentHtml &&
+                repairJobs.some((job) => job.block.repair?.status === "pending")
+              ) {
+                messages.push({
+                  role: "assistant",
+                  content:
+                    assistant.content.slice(responseTextStart).slice(-4000) ||
+                    null,
+                });
+                activateRepair();
+                return true;
               }
-              if (mutationResult && !result.error) {
-                activity.summary = "修改候选已保存，等待确认";
-              }
-              if (isGeneration && !result.error) {
-                activity.summary = "组件候选已生成并保存";
-              }
-              if (result.error) {
-                activity.details = String(result.error).slice(0, 16000);
-                activity.summary = `${
-                  mutationResult
-                    ? "源码修改失败"
-                    : isGeneration
-                    ? "组件生成未完成"
-                    : "读取未完成"
-                }：${String(result.error).slice(0, 120)}`;
-              }
-              emit({ type: "tool_end", activity });
-              // Metadata only; diagnostics deliberately exclude source and prompt text.
-              // eslint-disable-next-line no-console
-              console.info(
-                JSON.stringify({
-                  event: "chat_source_tool",
-                  noteId,
-                  sessionId,
-                  turnId: body.turnId,
-                  tool: tool.function.name,
-                  status: activity.status,
-                  errorCode: activity.errorCode,
-                  targetVersion: editing?.version,
-                  readRevision: mutationResult ? undefined : result.revision,
-                  readVersion: mutationResult ? undefined : result.version,
-                  contextChars: JSON.stringify(messages).length,
-                  contextLimit,
-                  readChars,
-                  candidateSaved: mutationResult && !result.error,
-                  repairAttempt: repairForCall?.block.repair?.attempts,
-                  normalToolRounds: toolBudget.normalRounds,
-                  recoveryToolRounds: toolBudget.recoveryRounds,
-                }),
-              );
-              dirty = true;
-            }
-            toolBudget.record(successfulCalls, failedCalls, recoveryRound);
-            if (
-              previewRepairBlock &&
-              successfulMutation &&
-              !failedCalls &&
-              !repairing
-            ) {
-              const review = await reviewPreview(responseTextStart);
-              if (review === "retry") {
-                continue;
-              }
-              if (review === "passed") {
-                completed = true;
-                break;
-              }
-            }
-            if (
-              repairing &&
-              repairing.block.repair!.attempts >= HTML_SYNTAX_REPAIR_LIMIT
-            ) {
-              throw new Error(
-                `自动修复已达${HTML_SYNTAX_REPAIR_LIMIT}次，草稿已保留：${
-                  repairing.block.repair!.error
-                }`,
-              );
-            }
-            if (
-              !repairing &&
-              repairJobs.some((job) => job.block.repair?.status === "pending")
-            ) {
-              activateRepair();
-            } else if (
-              !repairing &&
-              !previewRepairBlock &&
-              repairJobs.some((job) => job.block.repair?.status === "succeeded")
-            ) {
-              if ((await reviewPreview(responseTextStart)) === "retry") {
-                continue;
-              }
-              completed = true;
-              break;
-            }
-            if (
-              round === 0 &&
-              explicitWidgetTool &&
-              !retainedArtifacts.length
-            ) {
-              if (commandFailure) {
-                throw new Error(commandFailure);
-              }
-              // A saved card is the authoritative command result. Do not spend
-              // another model request merely to invent a success confirmation.
-              completed = true;
-              break;
-            }
-          } else {
-            if (finish !== "stop") {
-              throw new Error(
-                finish === "length"
-                  ? "回答达到本次输出上限（32768 tokens，包含思考），已保留内容；可手动继续"
-                  : "模型连接提前结束，部分内容已保留",
-              );
-            }
-            const pseudo = assistant.blocks!.filter(
-              (b) => b.type === "protocol" && b.status === "pending",
-            );
-            if (pseudo.length && !repairing && protocolCorrections === 0) {
-              toolBudget.assertAvailable();
-              protocolCorrections++;
-              protocolRecovery = true;
-              for (const block of pseudo) {
-                if (block.type === "protocol") {
-                  block.status = "correcting";
-                  publishBlock(block);
-                }
-              }
-              messages.push({
-                role: "assistant",
-                content: assistant.content
-                  .slice(responseTextStart)
-                  .slice(-16000),
-              });
-              messages.push({
-                role: "system",
-                content: `你将工具调用写成了普通正文，这些操作没有执行。只能通过接口的真实 tool_calls 执行，不要再次输出 XML 伪调用，不要输出整份 HTML。当前编辑版本：${JSON.stringify(
-                  {
-                    artifactId: editing?.artifactId,
-                    version: editing?.version,
-                    sourceHash: editing
-                      ? sourceHash(editing.source)
-                      : undefined,
-                    target: editing?.target,
-                  },
-                )}。已保存候选保留；${
-                  editing && permitsSourceEdit(task, false)
-                    ? "先 read_app_source 读取当前版本，再真实调用 edit_app_source 完成尚未执行的局部修改。"
-                    : editing
-                    ? "本轮为只读问答，edit_app_source不可用。不要重试编辑，只用当前可用读取工具回答，不得声称已修改。"
-                    : "仅使用当前可用工具完成尚未执行的操作，不要虚构工具或操作结果。"
-                }这是本轮唯一一次协议纠偏，不能仅声称成功。`,
-              });
-              continue;
-            }
-            if (repairing) {
-              throw new Error("模型未提交局部修复，草稿已保留，可手动继续修正");
-            }
-            if (
-              !currentHtml &&
-              repairJobs.some((job) => job.block.repair?.status === "pending")
-            ) {
-              messages.push({
-                role: "assistant",
-                content:
-                  assistant.content.slice(responseTextStart).slice(-4000) ||
-                  null,
-              });
-              activateRepair();
-              continue;
-            }
-            const realOutput =
-              task === "edit"
-                ? assistant.activities!.some(
-                    (a) =>
-                      a.name === "edit_app_source" && a.status === "complete",
-                  )
-                : assistant.blocks!.some((b) => b.type === "html" && b.saved);
-            if (
-              realOutput &&
-              (await reviewPreview(responseTextStart)) === "retry"
-            ) {
-              continue;
-            }
-            if (!repairing && completion.recover(realOutput)) {
-              toolBudget.assertAvailable();
-              protocolRecovery = true;
-              messages.push({
-                role: "assistant",
-                content:
-                  assistant.content.slice(responseTextStart).slice(-3000) ||
-                  "本次未产生有效作品。",
-              });
-              messages.push({
-                role: "system",
-                content:
-                  task === "edit"
-                    ? `执行检查：用户明确要求修改，但没有成功保存候选。不要只说修改完成，不要重新输出HTML。必须通过真实tool_calls完成。当前sourceHash=${
-                        editing ? sourceHash(editing.source) : "无"
-                      }。${
-                        readHash &&
-                        editing &&
-                        readHash === sourceHash(editing.source)
-                          ? "当前版本已读，现在直接调用edit_app_source提交最小替换。"
-                          : "先search_app_source定位或read_app_source读取，再edit_app_source。"
-                      }已保存的未应用整份HTML不是修改结果。`
-                    : "执行检查：用户要求交互应用，但没有完整、可保存的html作品。现在直接输出一个完整html围栏应用，不要描述计划，不要虚构作品引用。复杂内容以数据数组和通用渲染组织，先做完整可用的核心，使用受支持的本地库。",
-              });
-              appendBlock(
-                "text",
+              const realOutput =
                 task === "edit"
-                  ? "正在继续完成源码修改…\n"
-                  : "正在继续构建应用…\n",
-              );
-              continue;
+                  ? assistant.activities!.some(
+                      (a) =>
+                        a.name === "edit_app_source" && a.status === "complete",
+                    )
+                  : assistant.blocks!.some((b) => b.type === "html" && b.saved);
+              if (
+                realOutput &&
+                (await reviewPreview(responseTextStart)) === "retry"
+              ) {
+                return true;
+              }
+              if (!repairing && completion.recover(realOutput)) {
+                toolBudget.assertAvailable();
+                protocolRecovery = true;
+                messages.push({
+                  role: "assistant",
+                  content:
+                    assistant.content.slice(responseTextStart).slice(-3000) ||
+                    "本次未产生有效作品。",
+                });
+                messages.push({
+                  role: "system",
+                  content:
+                    task === "edit"
+                      ? `执行检查：用户明确要求修改，但没有成功保存候选。不要只说修改完成，不要重新输出HTML。必须通过真实tool_calls完成。当前sourceHash=${
+                          editing ? sourceHash(editing.source) : "无"
+                        }。${
+                          readHash &&
+                          editing &&
+                          readHash === sourceHash(editing.source)
+                            ? "当前版本已读，现在直接调用edit_app_source提交最小替换。"
+                            : "先search_app_source定位或read_app_source读取，再edit_app_source。"
+                        }已保存的未应用整份HTML不是修改结果。`
+                      : "执行检查：用户要求交互应用，但没有完整、可保存的html作品。现在直接输出一个完整html围栏应用，不要描述计划，不要虚构作品引用。复杂内容以数据数组和通用渲染组织，先做完整可用的核心，使用受支持的本地库。",
+                });
+                appendBlock(
+                  "text",
+                  task === "edit"
+                    ? "正在继续完成源码修改…\n"
+                    : "正在继续构建应用…\n",
+                );
+                return true;
+              }
+              if (task !== "chat" && !realOutput) {
+                throw new Error(
+                  "自动恢复后仍未产生有效结果；原组件未改变，已保留草稿与诊断",
+                );
+              }
+              completed = true;
+              return false;
             }
-            if (task !== "chat" && !realOutput) {
-              throw new Error(
-                "自动恢复后仍未产生有效结果；原组件未改变，已保留草稿与诊断",
-              );
-            }
-            completed = true;
-            break;
-          }
-        }
+            return true;
+          },
+        });
         if (!completed) {
           throw new Error("本轮工具处理未完成，已有候选和草稿保留");
         }
@@ -2576,6 +2488,7 @@ export const createChatService = async (
           });
         }
       } finally {
+        assistant.runtimeStatus = undefined;
         log.endModel(assistant.error);
         try {
           fence.finish();
@@ -2711,8 +2624,17 @@ export const createChatService = async (
         }
         if (started) {
           try {
+            await checkpointPiProjection(
+              directory,
+              noteId,
+              sessionId,
+              assistant,
+            );
             session = await persist();
             saved = !htmlSaveFailed;
+            if (saved) {
+              await acknowledgePiProjection(directory, noteId, sessionId);
+            }
           } catch {
             saved = false;
           }

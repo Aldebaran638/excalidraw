@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { createServer } from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";

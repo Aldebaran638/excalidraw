@@ -9,8 +9,6 @@ import {
   followsAppTask,
   permitsSourceEdit,
 } from "../server/agent/agentPolicy";
-import { compactAgentContext } from "../server/agent/agentContext";
-import { requestAgentStream } from "../server/agent/agentTransport";
 import {
   validateAppSource,
   replaceSource,
@@ -375,106 +373,6 @@ describe("agent task and recovery policy", () => {
       create.recover(false),
     ]).toEqual([true, true, true, false]);
     expect(new AgentCompletion("chat").recover(false)).toBe(false);
-  });
-});
-
-describe("agent model-only working memory", () => {
-  it("retains mixed recent groups and in-flight native arguments unchanged", () => {
-    const call = (id: string) => ({
-      id,
-      type: "function",
-      function: {
-        name: "read_app_source",
-        arguments: JSON.stringify({ startLine: 1, lineCount: 20 }),
-      },
-    });
-    const group = {
-      role: "assistant",
-      tool_calls: [call("old"), call("recent")],
-    };
-    const pending = { role: "assistant", tool_calls: [call("pending")] };
-    const messages: any[] = [
-      group,
-      { role: "tool", tool_call_id: "old", content: "x".repeat(1000) },
-      { role: "tool", tool_call_id: "recent", content: "{}" },
-      pending,
-    ];
-    compactAgentContext(messages, 1000);
-    expect(messages[0]).toBe(group);
-    expect(messages.at(-1)).toBe(pending);
-    expect(messages.filter((m) => m.role === "tool")).toHaveLength(2);
-  });
-  it("archives old source pages and arguments without breaking tool pairs", () => {
-    const messages: any[] = [{ role: "system", content: "policy" }];
-    for (let i = 0; i < 15; i++) {
-      messages.push({
-        role: "assistant",
-        tool_calls: [
-          {
-            id: `call-${i}`,
-            function: {
-              name: "edit_app_source",
-              arguments: JSON.stringify({
-                sourceHash: "hash",
-                edits: [{ oldText: "x".repeat(3000), newText: "y" }],
-              }),
-            },
-          },
-        ],
-      });
-      messages.push({
-        role: "tool",
-        tool_call_id: `call-${i}`,
-        content: JSON.stringify({
-          source: "x".repeat(6000),
-          sourceHash: "hash",
-          version: i,
-        }),
-      });
-    }
-    compactAgentContext(messages, 120000);
-    expect(JSON.stringify(messages).length).toBeLessThan(50000);
-    expect(messages[1].content).toContain('"sourceHash":"hash"');
-    expect(JSON.stringify(messages)).not.toContain('"archived"');
-    expect(messages.filter((m) => m.tool_calls)).toHaveLength(3);
-    expect(
-      JSON.parse(messages.at(-2).tool_calls[0].function.arguments).edits[0]
-        .oldText.length,
-    ).toBe(3000);
-    expect(JSON.parse(messages.at(-1).content).source.length).toBe(6000);
-    expect(
-      messages.filter((m) => m.role === "tool").map((m) => m.tool_call_id),
-    ).toEqual(
-      messages.filter((m) => m.tool_calls).map((m) => m.tool_calls[0].id),
-    );
-  });
-});
-
-describe("agent upstream transport", () => {
-  it("recovers transient pre-stream failures but never retries accepted streams", async () => {
-    const fetcher = vi
-      .fn()
-      .mockResolvedValueOnce(new Response("busy", { status: 503 }))
-      .mockRejectedValueOnce(new Error("socket"))
-      .mockResolvedValueOnce(new Response("data: stream"));
-    const response = await requestAgentStream(fetcher, "http://fixture", {});
-    expect(await response.text()).toBe("data: stream");
-    expect(fetcher).toHaveBeenCalledTimes(3);
-  });
-  it("does not retry authentication failures or user cancellation", async () => {
-    const fetcher = vi
-      .fn()
-      .mockResolvedValue(new Response("no", { status: 401 }));
-    expect(
-      (await requestAgentStream(fetcher, "http://fixture", {})).status,
-    ).toBe(401);
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    const abort = new AbortController();
-    abort.abort(new Error("stop"));
-    await expect(
-      requestAgentStream(fetcher, "http://fixture", { signal: abort.signal }),
-    ).rejects.toThrow("stop");
-    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });
 

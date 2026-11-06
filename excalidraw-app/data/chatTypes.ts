@@ -34,6 +34,7 @@ export type ChatMessage = {
   content: string;
   thinking?: boolean;
   reasoning?: string;
+  runtimeStatus?: string;
   artifacts?: ChatWidgetRef[];
   createdAt: number;
   status: ChatStatus;
@@ -85,6 +86,7 @@ export type ChatEvent = {
     | "block"
     | "delta"
     | "reasoning"
+    | "runtime_status"
     | "widget_start"
     | "widget_progress"
     | "widget_ready"
@@ -101,6 +103,7 @@ export type ChatEvent = {
   turnId: string;
   message?: ChatMessage;
   delta?: string;
+  runtimeStatus?: string;
   activity?: ChatActivity;
   session?: ChatSession;
   error?: string;

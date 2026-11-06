@@ -396,10 +396,11 @@ export const NoteChatPanel = ({
                   </div>
                 </div>
               )}
-              {message.blocks?.length === 0 &&
+              {(message.blocks?.length === 0 || message.runtimeStatus) &&
                 message.status === "generating" && (
                   <p className="note-chat-muted">
-                    {message.thinking ? "等待模型思考…" : "等待模型输出…"}
+                    {message.runtimeStatus ||
+                      (message.thinking ? "等待模型思考…" : "等待模型输出…")}
                   </p>
                 )}
               {message.blocks?.map((block) => {

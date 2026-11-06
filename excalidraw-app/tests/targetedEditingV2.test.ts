@@ -1,3 +1,4 @@
+// @vitest-environment node
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -91,7 +92,15 @@ async function fixture(
     async (_, init) => {
       const request = JSON.parse(String(init?.body));
       requests.push(request);
-      return respond(request, requests.length - 1);
+      try {
+        return await respond(request, requests.length - 1);
+      } catch (error) {
+        if (process.env.PI_TEST_DEBUG) {
+          // eslint-disable-next-line no-console
+          console.warn(error);
+        }
+        throw error;
+      }
     },
   );
   const server = createServer((req, res) => {
@@ -201,8 +210,14 @@ describe("chat tool round limits", () => {
         ? call("get_note_outline", {})
         : stream({ content: "完成" });
     });
-    const result = await f.send({ content: "解释当前应用" });
-    expect(result.message?.status).toBe("complete");
+    const result = await f.send({
+      content: "解释当前应用",
+      snapshot: {
+        capturedAt: Date.now(),
+        elements: [{ id: "budget-note", type: "text", text: "测试" }],
+      },
+    });
+    expect(result.message?.status, result.message?.error).toBe("complete");
     expect(
       result.message?.activities?.filter((a) => a.status === "failed"),
     ).toHaveLength(10);
@@ -214,7 +229,13 @@ describe("chat tool round limits", () => {
 
   it("rejects a 101st normal round with an accurate reason", async () => {
     const f = await fixture(() => call("get_note_outline", {}));
-    const result = await f.send();
+    const result = await f.send({
+      content: "解释当前笔记",
+      snapshot: {
+        capturedAt: Date.now(),
+        elements: [{ id: "budget-note", type: "text", text: "测试" }],
+      },
+    });
     expect(result.message?.status).toBe("failed");
     expect(result.message?.error).toContain("100 次正常工具往返");
     expect(result.message?.activities).toHaveLength(100);
@@ -243,7 +264,10 @@ describe("agent automatic task completion", () => {
       }
       if (step === 1) {
         expect(names).toContain("edit_app_source");
-        const current = JSON.parse(request.messages.at(-1).content);
+        const current = JSON.parse(
+          request.messages.findLast((message: any) => message.role === "tool")
+            .content,
+        );
         if (index > 2) {
           expect(current.source).toContain("第一候选");
         }
@@ -265,7 +289,7 @@ describe("agent automatic task completion", () => {
       content:
         "你理解错了，我说的实际使用例子指的是，一般什么业务场景使用RR，什么使用RC",
     });
-    expect(result.message?.status).toBe("complete");
+    expect(result.message?.status, result.message?.error).toBe("complete");
     expect(result.message?.agentTask).toMatchObject({
       kind: "edit",
       target: { kind: "html", artifactId: f.app.artifactId },
@@ -288,7 +312,10 @@ describe("agent automatic task completion", () => {
           request.tools.some((t: any) => t.function.name === "edit_app_source"),
         ).toBe(true);
         return call("edit_app_source", {
-          sourceHash: JSON.parse(request.messages.at(-1).content).sourceHash,
+          sourceHash: JSON.parse(
+            request.messages.findLast((message: any) => message.role === "tool")
+              .content,
+          ).sourceHash,
           edits: [{ oldText: "说明", newText: "业务场景" }],
         });
       }
@@ -346,7 +373,7 @@ describe("agent automatic task completion", () => {
       revision: previous.revision,
       retryMessageId: retryId,
     });
-    expect(result.message?.status).toBe("complete");
+    expect(result.message?.status, result.message?.error).toBe("complete");
     expect(result.message?.agentTask?.kind).toBe("edit");
     expect(f.session().messages.filter((m) => m.role === "user")).toHaveLength(
       1,
@@ -436,10 +463,18 @@ describe("agent automatic task completion", () => {
         return call("read_app_source", {});
       }
       if (index === 2) {
-        expect(request.messages.at(-1).content).toContain("只读问答");
-        expect(request.messages.at(-1).content).not.toContain(
-          "再真实调用 edit_app_source",
-        );
+        expect(
+          request.messages.some((message: any) =>
+            JSON.stringify(message.content).includes("只读问答"),
+          ),
+        ).toBe(true);
+        expect(
+          request.messages.some((message: any) =>
+            JSON.stringify(message.content).includes(
+              "再真实调用 edit_app_source",
+            ),
+          ),
+        ).toBe(false);
       }
       return stream({ content: fake });
     });
@@ -463,13 +498,19 @@ describe("agent automatic task completion", () => {
           request.tools.some((t: any) => t.function.name === "edit_app_source"),
         ).toBe(false);
         return call("edit_app_source", {
-          sourceHash: JSON.parse(request.messages.at(-1).content).sourceHash,
+          sourceHash: JSON.parse(
+            request.messages.findLast((message: any) => message.role === "tool")
+              .content,
+          ).sourceHash,
           edits: [{ oldText: "原版", newText: "不该修改" }],
         });
       }
-      expect(JSON.parse(request.messages.at(-1).content).errorCode).toBe(
-        "protocol",
-      );
+      expect(
+        JSON.parse(
+          request.messages.findLast((message: any) => message.role === "tool")
+            .content,
+        ).errorCode,
+      ).toBe("protocol");
       return stream({ content: "本轮只读，原组件未修改。" });
     });
     const result = await f.send({ content: "只解释，不要修改" });
@@ -493,13 +534,16 @@ describe("agent automatic task completion", () => {
       if (index < 4) {
         return call("read_app_source", {});
       }
-      const result = JSON.parse(request.messages.at(-1).content);
+      const result = JSON.parse(
+        request.messages.findLast((message: any) => message.role === "tool")
+          .content,
+      );
       expect(result.error).toContain("本轮只读");
       expect(result.error).not.toContain("调用edit_app_source");
       return stream({ content: "根据已读源码说明。" });
     });
     const result = await f.send({ content: "只解释当前应用" });
-    expect(result.message?.status).toBe("complete");
+    expect(result.message?.status, result.message?.error).toBe("complete");
     expect(result.message?.activities?.at(-1)?.status).toBe("failed");
     expect(f.requests).toHaveLength(5);
   });
@@ -556,7 +600,7 @@ describe("agent automatic task completion", () => {
         });
       },
     );
-    expect(result.message?.status).toBe("complete");
+    expect(result.message?.status, result.message?.error).toBe("complete");
     expect(result.message?.activities?.map((a) => a.name)).toEqual([
       "read_app_source",
       "edit_app_source",
@@ -587,7 +631,12 @@ describe("agent automatic task completion", () => {
         });
       }
       if (index === 2) {
-        expect(JSON.parse(request.messages.at(-1).content)).toMatchObject({
+        expect(
+          JSON.parse(
+            request.messages.findLast((message: any) => message.role === "tool")
+              .content,
+          ),
+        ).toMatchObject({
           errorCode: "version_conflict",
         });
         return call("read_app_source", { startLine: 3, lineCount: 1 });
@@ -601,7 +650,7 @@ describe("agent automatic task completion", () => {
       return stream({ content: "候选已保存。" });
     }, initial);
     const result = await f.send();
-    expect(result.message?.status).toBe("complete");
+    expect(result.message?.status, result.message?.error).toBe("complete");
     expect(result.message?.activities?.map((a) => a.status)).toEqual([
       "complete",
       "failed",
@@ -674,7 +723,7 @@ describe("agent automatic task completion", () => {
         expect(response.status).toBe(200);
       },
     );
-    expect(result.message?.status).toBe("complete");
+    expect(result.message?.status, result.message?.error).toBe("complete");
     const blocks =
       result.message?.blocks?.filter((b) => b.type === "html") || [];
     expect(blocks).toHaveLength(1);
@@ -699,7 +748,10 @@ describe("agent automatic task completion", () => {
       }
       if (index === 1) {
         return call("edit_app_source", {
-          sourceHash: JSON.parse(request.messages.at(-1).content).sourceHash,
+          sourceHash: JSON.parse(
+            request.messages.findLast((message: any) => message.role === "tool")
+              .content,
+          ).sourceHash,
           edits: [{ oldText: old, newText: review }],
         });
       }
@@ -713,7 +765,12 @@ describe("agent automatic task completion", () => {
         });
       }
       if (index === 4) {
-        expect(JSON.parse(request.messages.at(-1).content)).toMatchObject({
+        expect(
+          JSON.parse(
+            request.messages.findLast((message: any) => message.role === "tool")
+              .content,
+          ),
+        ).toMatchObject({
           readonly: true,
           revision: "baseline",
         });
@@ -721,7 +778,10 @@ describe("agent automatic task completion", () => {
       }
       if (index === 6) {
         return call("edit_app_source", {
-          sourceHash: JSON.parse(request.messages.at(-1).content).sourceHash,
+          sourceHash: JSON.parse(
+            request.messages.findLast((message: any) => message.role === "tool")
+              .content,
+          ).sourceHash,
           edits: [
             { oldText: "原版", newText: "新版" },
             { oldText: review, newText: old + review },
@@ -776,7 +836,7 @@ describe("agent automatic task completion", () => {
         expect(response.status).toBe(200);
       },
     );
-    expect(result.message?.status).toBe("complete");
+    expect(result.message?.status, result.message?.error).toBe("complete");
     const blocks =
       result.message?.blocks?.filter((b) => b.type === "html") || [];
     expect(blocks).toHaveLength(1);
@@ -816,7 +876,7 @@ describe("agent automatic task completion", () => {
       content: "生成一个简单计数器组件",
       workspace: undefined,
     });
-    expect(result.message?.status).toBe("complete");
+    expect(result.message?.status, result.message?.error).toBe("complete");
     expect(
       result.message?.blocks?.some((b) => b.type === "html" && b.saved),
     ).toBe(true);
@@ -842,7 +902,7 @@ describe("agent automatic task completion", () => {
       return stream({ content: "候选已经保存，请确认。" });
     });
     const result = await f.send();
-    expect(result.message?.status).toBe("complete");
+    expect(result.message?.status, result.message?.error).toBe("complete");
     expect(
       result.message?.activities?.some(
         (a) => a.name === "edit_app_source" && a.status === "complete",
@@ -867,7 +927,7 @@ describe("agent automatic task completion", () => {
     });
     const blocks =
       result.message?.blocks?.filter((b) => b.type === "html") || [];
-    expect(result.message?.status).toBe("complete");
+    expect(result.message?.status, result.message?.error).toBe("complete");
     expect(blocks).toHaveLength(1);
     expect((blocks[0] as any).saved).toBe(true);
     expect(f.requests).toHaveLength(2);
@@ -889,7 +949,7 @@ describe("agent automatic task completion", () => {
       stream({ content: "TCP通过序号和确认实现可靠传输。" }),
     );
     const result = await f.send({ content: "解释一下TCP" });
-    expect(result.message?.status).toBe("complete");
+    expect(result.message?.status, result.message?.error).toBe("complete");
     expect(f.requests).toHaveLength(1);
   });
 });
@@ -1035,7 +1095,11 @@ describe("authoritative editing and workspaces", () => {
         expect(names).toContain("edit_app_source");
         expect(names).toContain("search_app_source");
         expect(names).not.toContain("read_app_source");
-        expect(request.messages.at(-1).content).toContain("连续三次");
+        expect(
+          request.messages.some((message: any) =>
+            JSON.stringify(message.content).includes("连续三次"),
+          ),
+        ).toBe(true);
         const result = request.messages.findLast(
           (message: any) => message.role === "tool",
         );
@@ -1051,7 +1115,7 @@ describe("authoritative editing and workspaces", () => {
     });
     await f.select();
     const { message } = await f.send();
-    expect(message?.status).toBe("complete");
+    expect(message?.status, message?.error).toBe("complete");
     expect(f.requests).toHaveLength(5);
     expect(
       message?.activities?.filter((activity) => activity.status === "failed"),
@@ -1068,7 +1132,10 @@ describe("authoritative editing and workspaces", () => {
       }
       if (i === 1) {
         return call("edit_app_source", {
-          sourceHash: JSON.parse(request.messages.at(-1).content).sourceHash,
+          sourceHash: JSON.parse(
+            request.messages.findLast((message: any) => message.role === "tool")
+              .content,
+          ).sourceHash,
           edits: [{ oldText: "原版", newText: "已保存" }],
         });
       }
@@ -1094,7 +1161,10 @@ describe("authoritative editing and workspaces", () => {
       }
       if (i === 1) {
         return call("edit_app_source", {
-          sourceHash: JSON.parse(request.messages.at(-1).content).sourceHash,
+          sourceHash: JSON.parse(
+            request.messages.findLast((message: any) => message.role === "tool")
+              .content,
+          ).sourceHash,
           edits: [{ oldText: "原版", newText: "已保存" }],
         });
       }
@@ -1124,7 +1194,10 @@ describe("authoritative editing and workspaces", () => {
           release = resolve;
         });
         return call("edit_app_source", {
-          sourceHash: JSON.parse(request.messages.at(-1).content).sourceHash,
+          sourceHash: JSON.parse(
+            request.messages.findLast((message: any) => message.role === "tool")
+              .content,
+          ).sourceHash,
           edits: [{ oldText: "原版", newText: "旧请求的候选" }],
         });
       }
@@ -1151,11 +1224,18 @@ describe("authoritative editing and workspaces", () => {
         return stream({ content: fake });
       }
       if (i === 1) {
-        expect(request.messages.at(-1).content).toContain("没有执行");
+        expect(
+          request.messages.some((message: any) =>
+            JSON.stringify(message.content).includes("没有执行"),
+          ),
+        ).toBe(true);
         return call("read_app_source", {});
       }
       if (i === 2) {
-        const data = JSON.parse(request.messages.at(-1).content);
+        const data = JSON.parse(
+          request.messages.findLast((message: any) => message.role === "tool")
+            .content,
+        );
         return call("edit_app_source", {
           sourceHash: data.sourceHash,
           edits: [{ oldText: "原版", newText: "新版" }],
@@ -1165,7 +1245,7 @@ describe("authoritative editing and workspaces", () => {
     });
     await f.select();
     const { message } = await f.send();
-    expect(message?.status).toBe("complete");
+    expect(message?.status, message?.error).toBe("complete");
     expect(message?.blocks?.find((b) => b.type === "protocol")).toMatchObject({
       status: "resolved",
     });
@@ -1204,7 +1284,10 @@ describe("authoritative editing and workspaces", () => {
         return call("read_app_source", {});
       }
       if (step === 1) {
-        const result = JSON.parse(request.messages.at(-1).content);
+        const result = JSON.parse(
+          request.messages.findLast((message: any) => message.role === "tool")
+            .content,
+        );
         if (i > 2) {
           expect(result.source).toContain("第一候选");
         }

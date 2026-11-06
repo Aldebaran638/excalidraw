@@ -1363,6 +1363,9 @@ export class NoteChatController {
                 }
                 return { ...message, blocks };
               }
+              if (event.type === "runtime_status") {
+                return { ...message, runtimeStatus: event.runtimeStatus };
+              }
               if (event.activity) {
                 return {
                   ...message,
