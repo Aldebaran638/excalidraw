@@ -9,7 +9,10 @@ const { randomUUID } = require("node:crypto");
 const { chromium } = require("playwright-core");
 const base = "http://127.0.0.1:3009";
 const directory = path.resolve(".local-data/preview/notes");
-const output = path.resolve(".local-data/acceptance/html-canvas-presentation");
+const output = path.resolve(
+  process.env.HTML_CANVAS_ACCEPTANCE_OUTPUT ||
+    ".local-data/acceptance/html-canvas-presentation",
+);
 const json = async (url, init) => {
   const response = await fetch(base + url, init);
   const body = await response.json();
@@ -161,9 +164,57 @@ const source = `<style>html,body{background:#fff}main{min-height:calc(100vh - 32
     );
     const rect = await appRoot.boundingBox();
     const unselectedFrame = await appRoot.locator("iframe").boundingBox();
-    await frame.locator("#task").fill("用户任务保留");
+    const assertToolbarInside = async (root) => {
+      const bounds = await root.boundingBox();
+      for (const button of await root
+        .locator(".canvas-html-app-toolbar button")
+        .all()) {
+        const r = await button.boundingBox();
+        assert.ok(
+          r.x >= bounds.x + 2 &&
+            r.y >= bounds.y + 2 &&
+            r.x + r.width <= bounds.x + bounds.width - 2 &&
+            r.y + r.height <= bounds.y + bounds.height - 2,
+          JSON.stringify({ bounds, button: r }),
+        );
+      }
+    };
+    // Generated code cannot synthesize a user selection request.
+    await frame.locator("h1").evaluate((n) => n.click());
+    await page.waitForTimeout(50);
+    assert.equal(
+      await appRoot.locator(".canvas-html-app-toolbar").isVisible(),
+      false,
+    );
+    await frame.locator("h1").click();
+    await page.locator(".canvas-html-app.is-selected").waitFor();
+    await page.mouse.click(100, 750);
+    await page
+      .locator(".canvas-html-app.is-selected")
+      .waitFor({ state: "detached" });
+    // The first control click both selects and acts, without replaying the action.
     await frame.locator("#start").click();
+    await page.locator(".canvas-html-app.is-selected").waitFor();
     await frame.locator("#count").click();
+    await page.mouse.click(100, 750);
+    await page
+      .locator(".canvas-html-app.is-selected")
+      .waitFor({ state: "detached" });
+    await frame.locator("#task").click();
+    await page.locator(".canvas-html-app.is-selected").waitFor();
+    assert.equal(
+      await frame
+        .locator("#task")
+        .evaluate((n) => n.ownerDocument.activeElement === n),
+      true,
+    );
+    await frame.locator("#task").fill("用户任务保留");
+    assert.equal(
+      await frame
+        .locator("#task")
+        .evaluate((n) => n.ownerDocument.activeElement === n),
+      true,
+    );
     const state = await frame.evaluate(() => ({
       deadline: window.NoteApp.get("deadline"),
       count: window.NoteApp.get("count"),
@@ -177,7 +228,7 @@ const source = `<style>html,body{background:#fff}main{min-height:calc(100vh - 32
           ".canvas-html-app iframe",
         )),
     );
-    await page.mouse.click(rect.x + 10, rect.y + 15);
+    await assertToolbarInside(appRoot);
     await page.locator(".canvas-html-app.is-selected").waitFor();
     assert.equal(
       await appRoot.locator(".canvas-html-app-toolbar").isVisible(),
@@ -208,6 +259,7 @@ const source = `<style>html,body{background:#fff}main{min-height:calc(100vh - 32
       ),
       true,
     );
+    await buttons.first().hover();
     await page.screenshot({ path: path.join(output, "selected.png") });
     await appRoot.locator('[aria-label="在聊天中修改"]').focus();
     await page.keyboard.press("Tab");
@@ -222,6 +274,7 @@ const source = `<style>html,body{background:#fff}main{min-height:calc(100vh - 32
       await appRoot.locator('[aria-label="重新运行"]').boundingBox()
     ).width;
     await page.locator(".zoom-out-button").click();
+    await assertToolbarInside(appRoot);
     assert.ok(
       Math.abs(
         (await appRoot.locator('[aria-label="重新运行"]').boundingBox()).width -
@@ -237,6 +290,33 @@ const source = `<style>html,body{background:#fff}main{min-height:calc(100vh - 32
       () =>
         getComputedStyle(document.body).backgroundColor ===
         "rgb(255, 255, 255)",
+    );
+    await page.locator('[aria-label="关闭放大"]').hover();
+    const tooltip = await page
+      .locator('[aria-label="关闭放大"]')
+      .evaluate((n) => {
+        const css = n.ownerDocument.defaultView.getComputedStyle(n, "::after");
+        const r = n.getBoundingClientRect();
+        const d = n.closest("dialog").getBoundingClientRect();
+        return {
+          top: r.top + parseFloat(css.top),
+          bottom: r.top + parseFloat(css.top) + parseFloat(css.height),
+          dialogTop: d.top,
+          dialogBottom: d.bottom,
+          opacity: css.opacity,
+          content: css.content,
+          width: parseFloat(css.width),
+          height: parseFloat(css.height),
+        };
+      });
+    assert.equal(tooltip.opacity, "1");
+    assert.ok(
+      tooltip.width >= 48 && tooltip.height < 40,
+      JSON.stringify(tooltip),
+    );
+    assert.ok(
+      tooltip.top > tooltip.dialogTop && tooltip.bottom < tooltip.dialogBottom,
+      JSON.stringify(tooltip),
     );
     await page.screenshot({ path: path.join(output, "expanded.png") });
     await page.locator('[aria-label="关闭放大"]').click();
@@ -340,6 +420,14 @@ const source = `<style>html,body{background:#fff}main{min-height:calc(100vh - 32
         localStorage.setItem("aldebaran.repository-note-name", filename);
       }
     }, filename);
+    await touch.addInitScript(() => {
+      window.__interactionEvents = [];
+      window.addEventListener("message", (e) => {
+        if (e.data?.type === "interact") {
+          window.__interactionEvents.push(e.data.data);
+        }
+      });
+    });
     await touch.goto(base, { waitUntil: "domcontentloaded" });
     const touchRoot = touch.locator(".canvas-html-app");
     await touchRoot.locator("iframe").waitFor({ timeout: 60000 });
@@ -347,11 +435,57 @@ const source = `<style>html,body{background:#fff}main{min-height:calc(100vh - 32
       .frameLocator(".canvas-html-app iframe")
       .locator("#start")
       .waitFor();
-    const touchRect = await touchRoot.boundingBox();
-    await touch.touchscreen.tap(touchRect.x + 12, touchRect.y + 14);
+    const heading = await touch
+      .frameLocator(".canvas-html-app iframe")
+      .locator("h1")
+      .boundingBox();
+    const cdp = await mobile.newCDPSession(touch);
+    const point = {
+      x: heading.x + heading.width / 2,
+      y: heading.y + heading.height / 2,
+    };
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [point],
+    });
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ x: point.x, y: point.y - 35 }],
+    });
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    await touch.waitForTimeout(100);
+    assert.equal(
+      await touchRoot.locator(".canvas-html-app-toolbar").isVisible(),
+      false,
+    );
+    await cdp.detach();
+    await touch.frameLocator(".canvas-html-app iframe").locator("h1").tap();
     await touchRoot
       .locator(".canvas-html-app-toolbar")
-      .waitFor({ state: "visible" });
+      .waitFor({ state: "visible" })
+      .catch(async (error) => {
+        console.error(
+          "touch selection diagnostics",
+          await touchRoot.evaluate((n) => ({
+            classes: n.className,
+            enabled: n
+              .closest("[data-embeddable-controls-enabled]")
+              ?.getAttribute("data-embeddable-controls-enabled"),
+            events: window.__interactionEvents,
+            tool: [
+              ...n.ownerDocument.querySelectorAll(
+                ".ToolIcon_type_radio input:checked",
+              ),
+            ].map((e) => e.value),
+          })),
+        );
+        await touch.screenshot({ path: path.join(output, "touch-error.png") });
+        throw error;
+      });
+    await assertToolbarInside(touchRoot);
     for (const bounds of await touchRoot
       .locator(".canvas-html-app-toolbar button")
       .evaluateAll((nodes) =>
@@ -362,6 +496,7 @@ const source = `<style>html,body{background:#fff}main{min-height:calc(100vh - 32
       )) {
       assert.ok(bounds.width >= 43.9 && bounds.height >= 43.9);
     }
+    await touch.locator(".excalidraw").focus();
     await touch.keyboard.press("Alt+Shift+D");
     await touch.locator(".excalidraw.theme--dark").waitFor();
     await touch.waitForTimeout(750);
@@ -379,7 +514,7 @@ const source = `<style>html,body{background:#fff}main{min-height:calc(100vh - 32
     await mobile.close();
 
     console.log(
-      "PASS: legacy frame hidden without migration, native selection + drag, right icons, same iframe/viewport, expanded state, rerun + refresh state, PNG/SVG, narrow dark",
+      "PASS: card/control/input/touch selection, controls act once, button bounds at zoom, close tooltip visible, same live iframe, drag + state + exports + dark/narrow",
     );
   } catch (error) {
     console.error(error);

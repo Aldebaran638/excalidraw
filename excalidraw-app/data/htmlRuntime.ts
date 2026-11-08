@@ -42,6 +42,7 @@ function bootstrap(
   const getCtrl = getter(win.KeyboardEvent.prototype, "ctrlKey");
   const getMeta = getter(win.KeyboardEvent.prototype, "metaKey");
   const getShift = getter(win.KeyboardEvent.prototype, "shiftKey");
+  const getMouseShift = getter(win.MouseEvent.prototype, "shiftKey");
   const closest = win.Element.prototype.closest;
   const preventDefault = win.Event.prototype.preventDefault;
   // Opening from an inline script while its parser is active is ignored by
@@ -914,12 +915,83 @@ function bootstrap(
         },
         { once: true },
       );
+      // Non-interactive text may receive touch pointer events without a click.
+      // Select on a completed tap, but never after scrolling, cancelling or pinching.
+      const touchPointers = new Set<number>();
+      let multipleTouches = false;
+      let tap: { id: number; x: number; y: number } | null = null;
+      doc.addEventListener(
+        "pointerdown",
+        (event) => {
+          if (
+            !transparentCanvas ||
+            verifyInteractions ||
+            !event.isTrusted ||
+            event.pointerType === "mouse"
+          ) {
+            return;
+          }
+          touchPointers.add(event.pointerId);
+          if (touchPointers.size > 1) {
+            multipleTouches = true;
+            tap = null;
+          } else if (!multipleTouches && event.button === 0) {
+            tap = { id: event.pointerId, x: event.clientX, y: event.clientY };
+          }
+        },
+        true,
+      );
+      doc.addEventListener(
+        "pointermove",
+        (event) => {
+          if (
+            event.isTrusted &&
+            tap?.id === event.pointerId &&
+            Math.hypot(event.clientX - tap.x, event.clientY - tap.y) > 8
+          ) {
+            tap = null;
+          }
+        },
+        true,
+      );
+      const finishTap = (event: PointerEvent) => {
+        if (!event.isTrusted) {
+          return;
+        }
+        if (
+          !disposed &&
+          event.type === "pointerup" &&
+          tap?.id === event.pointerId &&
+          !multipleTouches &&
+          Math.hypot(event.clientX - tap.x, event.clientY - tap.y) <= 8
+        ) {
+          send("interact", { shift: apply(getMouseShift, event, []) });
+        }
+        touchPointers.delete(event.pointerId);
+        if (tap?.id === event.pointerId) {
+          tap = null;
+        }
+        if (!touchPointers.size) {
+          multipleTouches = false;
+        }
+      };
+      doc.addEventListener("pointerup", finishTap, true);
+      doc.addEventListener("pointercancel", finishTap, true);
       doc.addEventListener("submit", (event) => event.preventDefault(), true);
       doc.addEventListener(
         "click",
         (event) => {
           if (event.isTrusted) {
             refreshPreview();
+            // Iframe events do not bubble into the canvas. Report the actual
+            // primary click without cancelling or replaying the app interaction.
+            if (
+              transparentCanvas &&
+              !verifyInteractions &&
+              event.button === 0
+            ) {
+              send("interact", { shift: apply(getMouseShift, event, []) });
+            }
           }
           if ((event.target as Element)?.closest?.("a[href]")) {
             event.preventDefault();

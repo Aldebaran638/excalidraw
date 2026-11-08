@@ -9,6 +9,7 @@ import {
   viewportCoordsToSceneCoords,
   sceneCoordsToViewportCoords,
 } from "@excalidraw/common";
+import { selectGroupsForSelectedElements } from "@excalidraw/element/groups";
 import {
   cacheEmbeddableSnapshot,
   registerEmbeddableCapture,
@@ -727,6 +728,38 @@ const CanvasApp = ({
       <div data-embeddable-control className="canvas-html-app-content">
         <HtmlAppView
           transparentCanvas
+          onInteract={(shift) => {
+            const state = api.getAppState();
+            const elements = api.getSceneElements();
+            const live = elements.find((item) => item.id === element.id);
+            if (
+              !live ||
+              live.locked ||
+              state.viewModeEnabled ||
+              state.activeTool.type !== "selection" ||
+              node.current
+                ?.closest("[data-embeddable-controls-enabled]")
+                ?.getAttribute("data-embeddable-controls-enabled") !== "true" ||
+              state.selectedElementIds[element.id]
+            ) {
+              return;
+            }
+            api.updateScene({
+              appState: selectGroupsForSelectedElements(
+                {
+                  selectedElementIds: {
+                    ...(shift ? state.selectedElementIds : {}),
+                    [element.id]: true,
+                  },
+                  editingGroupId: state.editingGroupId,
+                },
+                elements,
+                state,
+                null,
+              ),
+              captureUpdate: CaptureUpdateAction.NEVER,
+            });
+          }}
           actionsContainer={actionsContainer}
           actions={
             <>

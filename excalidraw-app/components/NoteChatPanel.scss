@@ -786,6 +786,15 @@
     border-radius: 12px;
     > .chat-icon-button {
       align-self: flex-end;
+      &::after {
+        // The dialog clips its content; keep this tooltip below the close control.
+        top: calc(100% + 6px);
+        bottom: auto;
+        width: max-content;
+        max-width: min(180px, calc(100vw - 64px));
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
     }
     > .html-app-runtime {
       flex: 1;
@@ -819,6 +828,7 @@
 }
 
 .canvas-html-app {
+  --canvas-app-toolbar-width: 100px;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -832,7 +842,13 @@
   }
   .canvas-html-app-label {
     display: block;
-    max-width: calc(100% - 116px * var(--canvas-app-ui-scale, 1));
+    max-width: max(
+      0px,
+      calc(
+        100% - (var(--canvas-app-toolbar-width) + 20px) *
+          var(--canvas-app-ui-scale, 1)
+      )
+    );
     padding: 8px;
     font-size: 12px;
     overflow: hidden;
@@ -845,16 +861,18 @@
   }
   .canvas-html-app-toolbar {
     position: absolute;
-    bottom: 0;
-    right: 4px;
+    top: calc(6px * var(--canvas-app-ui-scale, 1));
+    right: calc(6px * var(--canvas-app-ui-scale, 1));
+    width: max-content;
+    max-width: calc(100% / var(--canvas-app-ui-scale, 1) - 12px);
     z-index: 2;
     transform: scale(var(--canvas-app-ui-scale, 1));
-    transform-origin: bottom right;
+    transform-origin: top right;
     &[hidden] {
       display: none;
     }
     .html-app-actions {
-      flex-wrap: nowrap;
+      flex-wrap: wrap;
       padding: 0;
       gap: 2px;
     }
@@ -892,6 +910,12 @@
       height: 100%;
       background: transparent;
     }
+  }
+}
+
+@media (pointer: coarse) {
+  .canvas-html-app {
+    --canvas-app-toolbar-width: 136px;
   }
 }
 

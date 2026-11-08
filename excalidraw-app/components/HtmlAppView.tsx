@@ -39,6 +39,7 @@ export const HtmlAppView = ({
   active = true,
   onError,
   onHistory,
+  onInteract,
   onDraft,
   onPreview,
   actions,
@@ -55,6 +56,7 @@ export const HtmlAppView = ({
   onRuntime?: (runtime: HtmlAppRuntime | null) => void;
   onError?: (error: string) => void;
   onHistory?: (redo: boolean) => void;
+  onInteract?: (shift: boolean) => void;
   onDraft?: (state: HtmlState) => void;
   onPreview?: (report: AppPreviewReport) => void;
   title?: string;
@@ -74,6 +76,7 @@ export const HtmlAppView = ({
     onRuntime,
     onError,
     onHistory,
+    onInteract,
     onDraft,
     onPreview,
   });
@@ -85,6 +88,7 @@ export const HtmlAppView = ({
     onRuntime,
     onError,
     onHistory,
+    onInteract,
     onDraft,
     onPreview,
   };
@@ -265,6 +269,12 @@ export const HtmlAppView = ({
             pending.resolve();
           }
         }
+      } else if (
+        type === "interact" &&
+        transparentCanvas &&
+        !dialog.current?.matches(":modal")
+      ) {
+        current.current.onInteract?.(data?.shift === true);
       } else if (type === "history") {
         if (data === "undo" || data === "redo") {
           current.current.onHistory?.(data === "redo");
