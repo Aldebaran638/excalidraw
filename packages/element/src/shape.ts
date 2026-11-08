@@ -263,6 +263,24 @@ const modifyIframeLikeForRoughOptions = (
   isExporting: boolean,
   embedsValidationStatus: EmbedsValidationStatus | null,
 ) => {
+  // Fully hosted controls own their visual surface. Keep their native hit and
+  // selection geometry, but do not paint an extra rectangle behind the host.
+  // The default covers existing hosted documents without a data migration.
+  const embed = element.customData?.embeddable;
+  if (
+    isEmbeddableElement(element) &&
+    (embed?.frame === "none" ||
+      (embed?.frame === undefined &&
+        embed?.interaction === "controls" &&
+        embed?.snapshotRequired === true &&
+        embed?.contentLocked === true))
+  ) {
+    return {
+      ...element,
+      strokeColor: "transparent",
+      backgroundColor: "transparent",
+    };
+  }
   if (
     isIframeLikeElement(element) &&
     (isExporting ||

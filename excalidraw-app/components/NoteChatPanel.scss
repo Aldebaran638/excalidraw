@@ -819,41 +819,61 @@
 }
 
 .canvas-html-app {
+  position: relative;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--default-border-color);
-  background: var(--island-bg-color);
+  background: transparent;
   color: var(--text-primary-color);
-  border-radius: 8px;
   box-sizing: border-box;
   .canvas-html-app-title {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 4px 10px;
-    min-height: 36px;
+    position: relative;
+    flex: 0 0 36px;
     cursor: move;
-    border-bottom: 1px solid var(--default-border-color);
-    span {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
   }
-  button {
-    color: inherit;
-    background: var(--island-bg-color);
-    border: 1px solid var(--default-border-color);
-    border-radius: 6px;
-    padding: 6px;
-    cursor: pointer;
+  .canvas-html-app-label {
+    display: block;
+    max-width: calc(100% - 116px * var(--canvas-app-ui-scale, 1));
+    padding: 8px;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    visibility: hidden;
+  }
+  &.is-selected .canvas-html-app-label {
+    visibility: visible;
+  }
+  .canvas-html-app-toolbar {
+    position: absolute;
+    bottom: 0;
+    right: 4px;
+    z-index: 2;
+    transform: scale(var(--canvas-app-ui-scale, 1));
+    transform-origin: bottom right;
+    &[hidden] {
+      display: none;
+    }
+    .html-app-actions {
+      flex-wrap: nowrap;
+      padding: 0;
+      gap: 2px;
+    }
+    .chat-icon-button::after {
+      top: calc(100% + 4px);
+      bottom: auto;
+      white-space: normal;
+      width: max-content;
+      max-width: min(160px, 80vw);
+      overflow-wrap: anywhere;
+    }
   }
   .canvas-html-app-content {
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
+    // Leave native edge selection/resize targets outside iframe hit handling.
+    margin: 0 4px 4px;
   }
   .html-app-view {
     flex: 1;
@@ -864,19 +884,17 @@
   .note-chat-html-dialog:not(.is-expanded) {
     flex: 1;
     min-height: 0;
+    background: transparent;
     > div {
       height: 100%;
     }
     .html-app-frame {
       height: 100%;
+      background: transparent;
     }
   }
-  .canvas-html-app-restart {
-    position: absolute;
-    right: 0;
-    bottom: 0;
-  }
 }
+
 .html-app-candidate {
   padding: 12px;
   border-top: 1px solid var(--default-border-color);

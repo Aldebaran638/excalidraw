@@ -1,3 +1,4 @@
+import { installHtmlCanvasSurface } from "./htmlCanvasSurface";
 import { installIframeOverlayScrollbars } from "./iframeOverlayScrollbars";
 import { HTML_THEME_CSS } from "./htmlEnvironment";
 import { inspectHeadingContrast } from "./appContrast";
@@ -24,6 +25,8 @@ function bootstrap(
   verifyInteractions: boolean,
   inspectInteractions: typeof inspectNodeInteractions,
   inspectContrast: typeof inspectHeadingContrast,
+  installSurface: typeof installHtmlCanvasSurface,
+  transparentCanvas: boolean,
 ) {
   const win = window;
   // Capture native references before generated code can replace its globals.
@@ -107,6 +110,7 @@ function bootstrap(
       >();
       let disposed = false;
       let disposeScrollbars = () => {};
+      let surface: ReturnType<typeof installHtmlCanvasSurface> | undefined;
       const keyFor = (key: string) => {
         if (typeof key !== "string" || !key || key.length > 200) {
           throw new Error("生命周期 key 不正确");
@@ -147,6 +151,7 @@ function bootstrap(
         win.clearTimeout(previewTimer);
         ended = true;
         disposeScrollbars();
+        surface?.dispose();
         restoreObserver.disconnect();
         for (const timer of timers.values()) {
           win.clearInterval(timer.id);
@@ -620,6 +625,10 @@ function bootstrap(
           }
           return;
         }
+        if (event.data.type === "presentation" && transparentCanvas) {
+          surface?.setTransparent(event.data.data?.transparent === true);
+          return;
+        }
         if (event.data.type === "theme") {
           doc.documentElement.style.colorScheme =
             event.data.data === "dark" ? "dark" : "light";
@@ -928,6 +937,9 @@ function bootstrap(
         // acquire keyboard focus, even when application handlers call focus().
         doc.documentElement.inert = true;
       }
+      if (transparentCanvas) {
+        surface = installSurface(doc, true);
+      }
       disposeScrollbars = installScrollbars(doc);
       send("ready");
     },
@@ -942,6 +954,7 @@ export const htmlBootstrap = (
   captureScript = "",
   inputToken = token,
   verifyInteractions = false,
+  transparentCanvas = false,
 ) => {
   const args = JSON.stringify([
     token,
@@ -955,5 +968,7 @@ export const htmlBootstrap = (
     inputToken,
   )},${JSON.stringify(
     verifyInteractions,
-  )},${inspectNodeInteractions.toString()},${inspectHeadingContrast.toString()})</script>`;
+  )},${inspectNodeInteractions.toString()},${inspectHeadingContrast.toString()},${installHtmlCanvasSurface.toString()},${JSON.stringify(
+    transparentCanvas,
+  )})</script>`;
 };

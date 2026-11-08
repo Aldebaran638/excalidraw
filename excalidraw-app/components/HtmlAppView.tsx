@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import captureURL from "html-to-image/dist/html-to-image.js?url";
 import {
   CloseIcon,
@@ -42,6 +43,8 @@ export const HtmlAppView = ({
   onPreview,
   actions,
   verifyInteractions = false,
+  transparentCanvas = false,
+  actionsContainer,
 }: {
   source: string;
   complete: boolean;
@@ -58,6 +61,8 @@ export const HtmlAppView = ({
   active?: boolean;
   actions?: ReactNode;
   verifyInteractions?: boolean;
+  transparentCanvas?: boolean;
+  actionsContainer?: HTMLElement | null;
 }) => {
   const root = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -86,6 +91,8 @@ export const HtmlAppView = ({
   const initial = useRef(initialState);
   initial.current = initialState;
   const pumpRef = useRef<() => void>(() => {});
+  const presentationRef = useRef<(transparent: boolean) => void>(() => {});
+  const expandButton = useRef<HTMLButtonElement>(null);
   const [expanded, setExpanded] = useState(false);
   const [error, setError] = useState("");
   const [phase, setPhase] = useState("starting");
@@ -135,6 +142,8 @@ export const HtmlAppView = ({
         { token: inputToken, type, data, requestId },
         "*",
       );
+    presentationRef.current = (transparent) =>
+      send("presentation", { transparent });
     const pump = () => {
       if (!ready || finished || !isCurrent()) {
         return;
@@ -362,6 +371,7 @@ export const HtmlAppView = ({
       "",
       inputToken,
       verifyInteractions,
+      transparentCanvas,
     );
     const registerRuntime = current.current.onRuntime;
     registerRuntime?.(runtime);
@@ -390,10 +400,41 @@ export const HtmlAppView = ({
     };
     // Stable parser per source version; streaming updates are appended, never remounted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [identity, active, runtimeVersion, verifyInteractions]);
+  }, [identity, active, runtimeVersion, verifyInteractions, transparentCanvas]);
   useEffect(() => pumpRef.current());
+  useEffect(() => {
+    if (transparentCanvas) {
+      const frame = root.current?.querySelector("iframe");
+      // Update presentation through the existing authenticated bridge, retaining
+      // the same document, listeners, inputs and timers when opening the dialog.
+      presentationRef.current(!expanded);
+      if (frame) {
+        frame.style.background = "transparent";
+      }
+    }
+  }, [expanded, transparentCanvas, phase]);
+  const actionBar = (
+    <div className="html-app-actions" role="group" aria-label="应用操作">
+      <ChatIconButton
+        buttonRef={expandButton}
+        label="放大试用"
+        icon={fullscreenIcon}
+        onClick={() => {
+          dialog.current?.close();
+          dialog.current?.showModal();
+          setExpanded(true);
+        }}
+      />
+      {actions}
+    </div>
+  );
   return (
-    <div className="html-app-view" data-app-status={phase}>
+    <div
+      className={`html-app-view ${
+        transparentCanvas ? "is-canvas-surface" : ""
+      }`}
+      data-app-status={phase}
+    >
       <dialog
         open
         ref={dialog}
@@ -407,9 +448,7 @@ export const HtmlAppView = ({
           }
           setExpanded(false);
           node.show();
-          node.parentElement
-            ?.querySelector<HTMLButtonElement>(".html-app-actions > button")
-            ?.focus({ preventScroll: true });
+          expandButton.current?.focus({ preventScroll: true });
         }}
       >
         {expanded && (
@@ -432,18 +471,11 @@ export const HtmlAppView = ({
           {error}
         </p>
       )}
-      <div className="html-app-actions" role="group" aria-label="应用操作">
-        <ChatIconButton
-          label="放大试用"
-          icon={fullscreenIcon}
-          onClick={() => {
-            dialog.current?.close();
-            dialog.current?.showModal();
-            setExpanded(true);
-          }}
-        />
-        {actions}
-      </div>
+      {actionsContainer
+        ? createPortal(actionBar, actionsContainer)
+        : !transparentCanvas
+        ? actionBar
+        : null}
     </div>
   );
 };

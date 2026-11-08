@@ -1,3 +1,5 @@
+import { newEmbeddableElement } from "../src/newElement";
+import { ShapeCache } from "../src/shape";
 import { embeddableURLValidator, getEmbedLink } from "../src/embeddable";
 
 describe("YouTube timestamp parsing", () => {
@@ -229,5 +231,62 @@ describe("Google Drive video embedding", () => {
         undefined,
       ),
     ).toBe(true);
+  });
+});
+
+describe("hosted embeddable frames", () => {
+  const options = (customData: Record<string, unknown>) => {
+    const element = newEmbeddableElement({
+      type: "embeddable",
+      x: 10,
+      y: 10,
+      width: 300,
+      height: 200,
+      strokeColor: "#6965db",
+      backgroundColor: "#ffffff",
+      customData,
+    });
+    const before = JSON.stringify(element);
+    const shape = ShapeCache.generateElementShape(element, null);
+    expect(JSON.stringify(element)).toBe(before);
+    return shape.options;
+  };
+  it("hides the stored frame on existing fully hosted controls without migrating them", () => {
+    expect(
+      options({
+        embeddable: {
+          interaction: "controls",
+          snapshotRequired: true,
+          contentLocked: true,
+        },
+      }),
+    ).toMatchObject({ stroke: "transparent" });
+    expect(
+      options({
+        embeddable: {
+          interaction: "controls",
+          snapshotRequired: true,
+          contentLocked: true,
+        },
+      }).fill,
+    ).toBeUndefined();
+  });
+  it("supports explicit frame suppression for other hosts", () => {
+    expect(options({ embeddable: { frame: "none" } }).stroke).toBe(
+      "transparent",
+    );
+  });
+  it("keeps normal webpage borders and permits an explicit hosted frame", () => {
+    expect(options({}).stroke).toBe("#6965db");
+    expect(
+      options({
+        embeddable: {
+          frame: "element",
+          interaction: "controls",
+          snapshotRequired: true,
+          contentLocked: true,
+        },
+      }).stroke,
+    ).toBe("#6965db");
   });
 });

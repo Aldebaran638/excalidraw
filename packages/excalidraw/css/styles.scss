@@ -937,6 +937,11 @@ body.excalidraw-cursor-resize * {
 .excalidraw__embeddable-container {
   &[data-embeddable-interaction="controls"] {
     touch-action: pan-x pan-y;
+    // Hosts with direct controls own content clipping. Let their tooltips and
+    // compact, screen-sized toolbars extend past small embedded viewports.
+    .excalidraw__embeddable-container__inner {
+      overflow: visible;
+    }
   }
   &[data-embeddable-interaction="controls"] {
     [data-embeddable-control] {

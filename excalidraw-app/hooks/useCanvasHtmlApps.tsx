@@ -14,6 +14,8 @@ import {
   registerEmbeddableCapture,
 } from "@excalidraw/excalidraw/scene/embeddableSnapshots";
 
+import { pencilIcon, RetryIcon } from "@excalidraw/excalidraw/components/icons";
+
 import type {
   ExcalidrawImperativeAPI,
   ExcalidrawProps,
@@ -24,6 +26,7 @@ import type { ExcalidrawEmbeddableElement } from "@excalidraw/element/types";
 import { readCanvasHtmlApp } from "../data/chatHtml";
 import { forkHtmlApps } from "../data/htmlApps";
 import { HtmlAppView } from "../components/HtmlAppView";
+import { ChatIconButton } from "../components/ChatIconButton";
 
 import type { HtmlAppRuntime } from "../components/HtmlAppView";
 import type { CanvasHtmlApp, HtmlArtifact, HtmlState } from "../data/chatHtml";
@@ -142,6 +145,7 @@ export const useCanvasHtmlApps = ({
   const metadata = (app: CanvasHtmlApp) => ({
     htmlApp: app,
     embeddable: {
+      frame: "none",
       snapshotRequired: true,
       keepAlive: true,
       contentLocked: true,
@@ -169,7 +173,7 @@ export const useCanvasHtmlApps = ({
         : newEmbeddableElement({
             type: "embeddable",
             ...bounds,
-            strokeColor: "#6965db",
+            strokeColor: "transparent",
             backgroundColor: "transparent",
             customData: metadata(app),
           });
@@ -432,7 +436,10 @@ export const useCanvasHtmlApps = ({
       }
     }
   }, [api]);
-  const renderEmbeddable: ExcalidrawProps["renderEmbeddable"] = (element) => {
+  const renderEmbeddable: ExcalidrawProps["renderEmbeddable"] = (
+    element,
+    appState,
+  ) => {
     const app = readCanvasHtmlApp(element.customData?.htmlApp);
     if (!api) {
       return null;
@@ -447,6 +454,8 @@ export const useCanvasHtmlApps = ({
     return (
       <CanvasApp
         element={element}
+        selected={Boolean(appState.selectedElementIds[element.id])}
+        zoom={appState.zoom.value}
         app={app}
         api={api}
         noteId={noteId}
@@ -537,6 +546,8 @@ export const useCanvasHtmlApps = ({
 
 const CanvasApp = ({
   element,
+  selected,
+  zoom,
   app,
   api,
   noteId,
@@ -545,6 +556,8 @@ const CanvasApp = ({
   onEdit,
 }: {
   element: ExcalidrawEmbeddableElement;
+  selected: boolean;
+  zoom: number;
   app: CanvasHtmlApp;
   api: ExcalidrawImperativeAPI;
   noteId: string | null;
@@ -559,6 +572,8 @@ const CanvasApp = ({
   } | null>(null);
   const sourceKey = `${app.appId}/${app.version}/${app.sourceHash}/${noteId}`;
   const [run, setRun] = useState(0);
+  const [actionsContainer, setActionsContainer] =
+    useState<HTMLDivElement | null>(null);
   const node = useRef<HTMLDivElement>(null);
   const runtime = useRef<HtmlAppRuntime | null>(null);
   useEffect(() => {
@@ -668,18 +683,26 @@ const CanvasApp = ({
   return (
     <div
       ref={node}
-      className="canvas-html-app"
-      style={{ width: element.width, height: element.height }}
+      className={`canvas-html-app ${selected ? "is-selected" : ""}`}
+      data-element-id={element.id}
+      style={
+        {
+          width: element.width,
+          height: element.height,
+          "--canvas-app-ui-scale": 1 / zoom,
+        } as React.CSSProperties
+      }
     >
       <div className="canvas-html-app-title">
-        <span>{app.title}</span>
-        <button
+        <span className="canvas-html-app-label" aria-hidden={!selected}>
+          {app.title}
+        </span>
+        <div
+          className="canvas-html-app-toolbar"
           data-embeddable-control
-          onClick={onEdit}
-          disabled={resolved?.key !== sourceKey || Boolean(missing)}
-        >
-          在聊天中修改
-        </button>
+          hidden={!selected}
+          ref={setActionsContainer}
+        />
       </div>
       {missing && (
         <div role="alert" data-embeddable-control>
@@ -703,6 +726,23 @@ const CanvasApp = ({
       )}
       <div data-embeddable-control className="canvas-html-app-content">
         <HtmlAppView
+          transparentCanvas
+          actionsContainer={actionsContainer}
+          actions={
+            <>
+              <ChatIconButton
+                label="在聊天中修改"
+                icon={pencilIcon}
+                onClick={onEdit}
+                disabled={resolved?.key !== sourceKey || Boolean(missing)}
+              />
+              <ChatIconButton
+                label="重新运行"
+                icon={RetryIcon}
+                onClick={() => setRun((value) => value + 1)}
+              />
+            </>
+          }
           source={resolved?.key === sourceKey ? resolved.source : ""}
           active={resolved?.key === sourceKey}
           complete
@@ -782,12 +822,6 @@ const CanvasApp = ({
             });
           }}
         />
-        <button
-          className="canvas-html-app-restart"
-          onClick={() => setRun(run + 1)}
-        >
-          重新运行
-        </button>
       </div>
     </div>
   );

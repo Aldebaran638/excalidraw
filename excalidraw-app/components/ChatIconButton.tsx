@@ -10,8 +10,10 @@ export const ChatIconButton = ({
   primary = false,
   className = "",
   type = "button",
+  buttonRef,
   ...props
 }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children"> & {
+  buttonRef?: import("react").Ref<HTMLButtonElement>;
   label: string;
   icon: ReactNode;
   active?: boolean;
@@ -19,6 +21,7 @@ export const ChatIconButton = ({
 }) => (
   <button
     {...props}
+    ref={buttonRef}
     type={type}
     className={`chat-icon-button ${active ? "is-active" : ""} ${
       primary ? "is-primary" : ""
