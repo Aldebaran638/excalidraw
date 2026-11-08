@@ -1,38 +1,60 @@
 .RepositorySyncStatus {
+  --repository-sync-size: 2.25rem;
+  position: relative;
   display: inline-flex;
+  flex: 0 0 var(--repository-sync-size);
   align-items: center;
-  gap: 0.35rem;
-  min-height: 2rem;
-  padding: 0 0.55rem;
-  border: 1px solid var(--color-border-outline-variant);
+  justify-content: center;
+  align-self: center;
+  box-sizing: border-box;
+  width: var(--repository-sync-size);
+  min-width: var(--repository-sync-size);
+  max-width: var(--repository-sync-size);
+  height: var(--repository-sync-size);
+  padding: 0;
+  border: 0;
   border-radius: 0.5rem;
   color: var(--color-gray-60);
-  background: var(--color-surface-lowest);
-  font-size: 0.75rem;
-  white-space: nowrap;
-  max-width: 100%;
+  background: transparent;
 
+  &:hover,
+  &:focus-within {
+    background: var(--button-hover-bg);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+
+  // Keep live announcements available without letting text size the toolbar.
   &__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
     overflow: hidden;
-    text-overflow: ellipsis;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   &__retry {
-    flex-shrink: 0;
-    min-height: 2.5rem;
-    padding: 0 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: 0;
     border: 0;
-    border-radius: 0.35rem;
+    border-radius: inherit;
     background: transparent;
-    color: var(--color-primary);
-    font: inherit;
+    color: inherit;
     cursor: pointer;
-    &:hover {
-      background: var(--button-hover-bg);
-    }
     &:focus-visible {
       outline: 2px solid var(--color-primary);
-      outline-offset: -2px;
+      outline-offset: 2px;
     }
     &:disabled {
       cursor: wait;
@@ -42,28 +64,61 @@
 
   &__icon {
     display: inline-flex;
+    flex: none;
     width: 1rem;
     height: 1rem;
     align-items: center;
     justify-content: center;
+    svg {
+      width: 100%;
+      height: 100%;
+    }
+  }
+
+  &__tooltip {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 8px);
+    right: 0;
+    box-sizing: border-box;
+    width: max-content;
+    max-width: min(320px, calc(100vw - 32px));
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: #25252a;
+    color: #fff;
+    font: 12px/1.5 system-ui, sans-serif;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+    visibility: hidden;
+  }
+  &:hover &__tooltip,
+  &:focus-within &__tooltip {
+    visibility: visible;
+  }
+  &__hint {
+    display: block;
+    margin-top: 4px;
   }
 
   &--synced {
-    border-color: var(--color-success);
-    color: var(--color-success);
-    font-weight: 500;
+    color: var(--color-success-text);
   }
-
   &--pending,
   &--syncing,
   &--external {
-    border-color: var(--color-primary);
     color: var(--color-primary);
   }
-
   &--missing,
-  &--error {
-    border-color: var(--color-danger);
+  &--error,
+  &--unavailable,
+  &--conflict {
     color: var(--color-danger);
+  }
+}
+@media (pointer: coarse) {
+  .RepositorySyncStatus {
+    --repository-sync-size: 2.75rem;
   }
 }
