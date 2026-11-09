@@ -1,6 +1,19 @@
 # 本地预览服务
 
-日常服务保留在 **3001**；应用预览固定使用 **3009**，不另开 3002–3008 或其他应用预览端口。
+Excalidraw 正式服务使用 **3010**，挂载项目原有 `notes/`；开发预览固定使用 **3009**，挂载 `.local-data/preview/notes/`。两个目录及其中的聊天、应用源码保持独立，不自动复制或同步。**3001 当前属于其他项目，不能停止或覆盖。** 不另开 3002–3008 或其他应用预览端口。
+
+## 正式版本发布
+
+`master` 保留已验收版本，`aldebaran` 用于开发集成；验收后快进合并，已合并的短期分支可以删除，不默认推送远端。
+
+正式版通过 `docker-compose.production.yml` 启动，宿主端口默认 3010，可用 `EXCALIDRAW_PORT` 显式配置。`.env.production.local`（不提交）记录 `EXCALIDRAW_IMAGE` 的已验收镜像标签及实际 Qwen 配置；发布使用不可变提交标签，不依赖开发镜像的 `latest`。
+
+```bash
+docker compose -p excalidraw-production --env-file .env.production.local \
+  -f docker-compose.production.yml up -d --no-build
+```
+
+发布前备份正式数据；更新仅替换应用镜像。回退时将 `EXCALIDRAW_IMAGE` 改为上一份发布镜像，再执行相同命令，不自动回退笔记数据。3009 继续运行且保持原数据挂载。
 
 使用 `docker-compose.preview.yml`，固定挂载项目的 `.local-data/preview/notes/`，不通过环境变量切换验收数据目录：
 
@@ -20,20 +33,13 @@ docker compose -p excalidraw-preview -f docker-compose.preview.yml up -d --build
 
 `test:chat:browser` 使用真实 Qwen；`note-chat-display.cjs` 使用固定数据验收表格、思考开关、模式偏好恢复及明暗/移动布局，不请求模型。
 
-```bash
-APP_URL=http://127.0.0.1:3009 \
-TEST_NOTES_DIR=/tmp/excalidraw-chat-your-isolated-test-directory \
-BROWSER_EXECUTABLE=/absolute/path/to/chrome \
-node excalidraw-app/tests/note-chat-display.cjs
-```
-
-先将预览挂载到该独立测试目录，再运行验收；不要将自动化验收指向日常或正在使用的预览笔记。验收后挂回原来的预览目录。单元测试的临时端口和按需运行的上游模拟接口不是额外的应用预览服务，测试结束后应释放。
+验收始终使用固定 3009 和固定数据目录，样例必须唯一命名，只清理本次创建的记录。历史脚本若要求临时应用数据目录，应先改为此规则再运行；不能切换挂载或新建第二套应用环境。单元测试的临时目录、临时端口及上游模拟接口仍可使用，结束后释放。
 
 ## 聊天组件流式验收
 
-模拟模型：在独立验收容器内运行 `excalidraw-app/tests/chat-widget-fixture.cjs`，上游配置为容器自身的 `http://127.0.0.1:3304/v1`，模型为 `fixture-widgets`，不发布 3304 到宿主。运行 `chat-widget-stream-browser.cjs`，它会验证完整响应结束前出现真实节点、预览不可操作、正文失败后作品保留、刷新和主题/窄屏表现。`chat-widget-browser.cjs` 覆盖版本、试用、导入及画布历史回归。
+上述旧 JSON 组件脚本仅作历史参考，当前新建和修改统一使用 HTML 应用与 Pi 工具。运行旧脚本前须核对其兼容性及数据清理行为。当前浏览器回归可使用 `html-canvas-drag.cjs` 和 `html-canvas-transparency.cjs`，两者仅创建并清理自己的唯一命名样例，不调用模型。
 
-真实 Qwen：恢复真实上游及模型配置后，`chat-widget-real.cjs` 在独立笔记目录验收工具调用、流式预览及版本修改。`widget-generation-real.ts` 可直接验证共享生成器的真实流式输出，不写笔记和聊天。模拟模型成功不代表真实模型成功。验收结束后重新创建预览容器，恢复原笔记挂载及真实模型配置，停止容器内模拟接口。
+真实 Qwen 验收严格串行，每次只运行一个请求／Agent 循环，不与修复或重放测试重叠。只在 3009 验收，不能把正式版 3010 用作自动化样例目录；模拟模型通过与真实模型结果分别报告。
 
 ## Pi 运行依赖
 
