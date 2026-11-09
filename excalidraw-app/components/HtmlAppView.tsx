@@ -134,11 +134,18 @@ export const HtmlAppView = ({
         timer: number;
       }
     >();
+    const colorScheme = () =>
+      node.closest(".excalidraw")?.classList.contains("theme--dark")
+        ? "dark"
+        : "light";
     const frame = doc.createElement("iframe");
     frame.title = title;
     frame.className = "note-chat-html-frame html-app-frame";
     frame.setAttribute("sandbox", "allow-scripts");
     frame.referrerPolicy = "no-referrer";
+    // An iframe whose used scheme differs from its document gets an opaque
+    // browser canvas, even when both HTML backgrounds are transparent.
+    frame.style.colorScheme = colorScheme();
     const token = win.crypto.randomUUID();
     const inputToken = win.crypto.randomUUID();
     const send = (type: string, data?: unknown, requestId?: string) =>
@@ -227,13 +234,11 @@ export const HtmlAppView = ({
         });
       },
     };
-    const theme = () =>
-      send(
-        "theme",
-        node.closest(".excalidraw")?.classList.contains("theme--dark")
-          ? "dark"
-          : "light",
-      );
+    const theme = () => {
+      const scheme = colorScheme();
+      frame.style.colorScheme = scheme;
+      send("theme", scheme);
+    };
     const receive = (event: MessageEvent) => {
       if (
         !isCurrent() ||
