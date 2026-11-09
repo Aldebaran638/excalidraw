@@ -40,6 +40,10 @@ export const HtmlAppView = ({
   onError,
   onHistory,
   onInteract,
+  onCanvasDrag,
+  onCanvasSpace,
+  onCanvasPinch,
+  dragEnabled = false,
   onDraft,
   onPreview,
   actions,
@@ -57,6 +61,24 @@ export const HtmlAppView = ({
   onError?: (error: string) => void;
   onHistory?: (redo: boolean) => void;
   onInteract?: (shift: boolean) => void;
+  onCanvasDrag?: (
+    phase: "start" | "move" | "end" | "cancel",
+    data?: {
+      deltaX: number;
+      deltaY: number;
+      shiftKey: boolean;
+      ctrlKey: boolean;
+      metaKey: boolean;
+      altKey: boolean;
+    },
+  ) => boolean | void;
+  dragEnabled?: boolean;
+  onCanvasSpace?: (pressed: boolean) => void;
+  onCanvasPinch?: (
+    ratio: number,
+    previous: { x: number; y: number },
+    current: { x: number; y: number },
+  ) => void;
   onDraft?: (state: HtmlState) => void;
   onPreview?: (report: AppPreviewReport) => void;
   title?: string;
@@ -77,6 +99,10 @@ export const HtmlAppView = ({
     onError,
     onHistory,
     onInteract,
+    onCanvasDrag,
+    onCanvasSpace,
+    onCanvasPinch,
+    dragEnabled,
     onDraft,
     onPreview,
   });
@@ -89,6 +115,10 @@ export const HtmlAppView = ({
     onError,
     onHistory,
     onInteract,
+    onCanvasDrag,
+    onCanvasSpace,
+    onCanvasPinch,
+    dragEnabled,
     onDraft,
     onPreview,
   };
@@ -153,8 +183,10 @@ export const HtmlAppView = ({
         { token: inputToken, type, data, requestId },
         "*",
       );
-    presentationRef.current = (transparent) =>
+    presentationRef.current = (transparent) => {
       send("presentation", { transparent });
+      gestures();
+    };
     const pump = () => {
       if (!ready || finished || !isCurrent()) {
         return;
@@ -234,10 +266,21 @@ export const HtmlAppView = ({
         });
       },
     };
+    const gestures = () =>
+      send(
+        "canvas_gestures",
+        transparentCanvas &&
+          current.current.dragEnabled &&
+          !dialog.current?.matches(":modal") &&
+          node
+            .closest("[data-embeddable-controls-enabled]")
+            ?.getAttribute("data-embeddable-controls-enabled") === "true",
+      );
     const theme = () => {
       const scheme = colorScheme();
       frame.style.colorScheme = scheme;
       send("theme", scheme);
+      gestures();
     };
     const receive = (event: MessageEvent) => {
       if (
@@ -273,6 +316,62 @@ export const HtmlAppView = ({
           } else {
             pending.resolve();
           }
+        }
+      } else if (
+        type === "canvas_pinch" &&
+        transparentCanvas &&
+        !dialog.current?.matches(":modal")
+      ) {
+        if (
+          ![
+            data?.ratio,
+            data?.deltaX,
+            data?.deltaY,
+            data?.current?.x,
+            data?.current?.y,
+          ].every(Number.isFinite)
+        ) {
+          return;
+        }
+        const rect = frame.getBoundingClientRect();
+        const point = (p: { x: number; y: number }) => ({
+          x: rect.left + p.x * rect.width,
+          y: rect.top + p.y * rect.height,
+        });
+        current.current.onCanvasPinch?.(
+          data.ratio,
+          {
+            x: point(data.current).x - data.deltaX,
+            y: point(data.current).y - data.deltaY,
+          },
+          point(data.current),
+        );
+      } else if (
+        type === "canvas_space" &&
+        transparentCanvas &&
+        !dialog.current?.matches(":modal") &&
+        typeof data === "boolean"
+      ) {
+        current.current.onCanvasSpace?.(data);
+      } else if (type === "canvas_drag" && transparentCanvas && isCurrent()) {
+        const phase = data?.phase;
+        if (!["start", "move", "end", "cancel"].includes(phase)) {
+          return;
+        }
+        if (
+          phase === "move" &&
+          (![data.deltaX, data.deltaY].every(Number.isFinite) ||
+            !["shiftKey", "ctrlKey", "metaKey", "altKey"].every(
+              (key) => typeof data[key] === "boolean",
+            ))
+        ) {
+          return;
+        }
+        if (
+          dialog.current?.matches(":modal") ||
+          current.current.onCanvasDrag?.(phase, data) === false
+        ) {
+          send("canvas_drag_cancel");
         }
       } else if (
         type === "interact" &&
@@ -377,6 +476,13 @@ export const HtmlAppView = ({
     if (app) {
       observer.observe(app, { attributes: true, attributeFilter: ["class"] });
     }
+    const controls = node.closest("[data-embeddable-controls-enabled]");
+    if (controls) {
+      observer.observe(controls, {
+        attributes: true,
+        attributeFilter: ["data-embeddable-controls-enabled"],
+      });
+    }
     win.addEventListener("message", receive);
     node.appendChild(frame);
     frame.srcdoc = htmlBootstrap(
@@ -396,6 +502,8 @@ export const HtmlAppView = ({
       }
     }, 10000);
     return () => {
+      current.current.onCanvasDrag?.("cancel");
+      current.current.onCanvasSpace?.(false);
       disposed = true;
       for (const request of prepared.values()) {
         win.clearTimeout(request.timer);
@@ -416,7 +524,12 @@ export const HtmlAppView = ({
     // Stable parser per source version; streaming updates are appended, never remounted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity, active, runtimeVersion, verifyInteractions, transparentCanvas]);
-  useEffect(() => pumpRef.current());
+  useEffect(() => {
+    pumpRef.current();
+    if (transparentCanvas) {
+      presentationRef.current(!expanded);
+    }
+  });
   useEffect(() => {
     if (transparentCanvas) {
       const frame = root.current?.querySelector("iframe");

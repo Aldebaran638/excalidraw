@@ -1283,6 +1283,9 @@ export interface ExcalidrawImperativeAPI {
   /** Whether the editor has been unmounted and the API is no longer usable. */
   isDestroyed: boolean;
   updateScene: InstanceType<typeof App>["updateScene"];
+  beginEmbeddedDrag: InstanceType<typeof App>["beginEmbeddedDrag"];
+  setEmbeddedSpacePressed: InstanceType<typeof App>["setEmbeddedSpacePressed"];
+  applyEmbeddedPinch: InstanceType<typeof App>["applyEmbeddedPinch"];
   applyDeltas: InstanceType<typeof App>["applyDeltas"];
   mutateElement: InstanceType<typeof App>["mutateElement"];
   updateLibrary: InstanceType<typeof Library>["updateLibrary"];

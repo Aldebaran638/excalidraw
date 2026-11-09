@@ -507,6 +507,7 @@ export const useRepositoryNoteSync = ({
       files: BinaryFiles,
     ) => {
       if (
+        appState.selectedElementsAreBeingDragged ||
         !availableRef.current ||
         !readyRef.current ||
         loadBlockedRef.current ||

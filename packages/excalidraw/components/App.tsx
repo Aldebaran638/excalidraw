@@ -803,6 +803,9 @@ class App extends React.Component<AppProps, AppState> {
       getViewportOffsets: this.viewport.getOffsets,
       getSceneElements: this.getSceneElements,
       getAppState: () => this.state,
+      beginEmbeddedDrag: this.beginEmbeddedDrag,
+      setEmbeddedSpacePressed: this.setEmbeddedSpacePressed,
+      applyEmbeddedPinch: this.applyEmbeddedPinch,
       getFiles: () => this.files,
       getName: this.getName,
       registerAction: (action: Action) => {
@@ -3224,6 +3227,269 @@ class App extends React.Component<AppProps, AppState> {
     }
   });
 
+  private finishEmbeddedDrag: (() => void) | null = null;
+
+  public applyEmbeddedPinch = (
+    ratio: number,
+    previous: { x: number; y: number },
+    current: { x: number; y: number },
+  ) => {
+    if (
+      !this.isNavigationEnabled() ||
+      ratio < 0.1 ||
+      ratio > 10 ||
+      ![ratio, previous.x, previous.y, current.x, current.y].every(
+        Number.isFinite,
+      )
+    ) {
+      return;
+    }
+    this.finishEmbeddedDrag?.();
+    this.viewport.translate((state) => {
+      const nextZoom = getNormalizedZoom(state.zoom.value * ratio);
+      const zoomed = getViewportForZoomWithScrollConstraints(
+        { viewportX: previous.x, viewportY: previous.y, nextZoom },
+        state,
+      );
+      return {
+        ...zoomed,
+        scrollX: zoomed.scrollX + (current.x - previous.x) / nextZoom,
+        scrollY: zoomed.scrollY + (current.y - previous.y) / nextZoom,
+      };
+    });
+  };
+
+  public setEmbeddedSpacePressed = (elementId: string, pressed: boolean) => {
+    if (
+      pressed &&
+      (!this.isNavigationEnabled() ||
+        !isEmbeddableElement(
+          this.scene.getNonDeletedElementsMap().get(elementId),
+        ))
+    ) {
+      return;
+    }
+    if (pressed) {
+      this.finishEmbeddedDrag?.();
+    }
+    isHoldingSpace = pressed;
+    this.excalidrawContainerRef.current?.toggleAttribute(
+      "data-embeddable-space",
+      pressed,
+    );
+    // The routing stylesheet expects the same explicit value as native Space.
+    if (pressed) {
+      this.excalidrawContainerRef.current?.setAttribute(
+        "data-embeddable-space",
+        "true",
+      );
+    }
+    this.setState({ activeEmbeddable: null });
+    if (pressed) {
+      this.cursor.set(CURSOR_TYPE.GRAB);
+    } else {
+      this.cursor.applyForTool();
+    }
+  };
+
+  /** A renderer supplies viewport deltas, never synthetic DOM events. */
+  public beginEmbeddedDrag = (elementId: string) => {
+    const allowed = () => {
+      const element = this.scene.getNonDeletedElementsMap().get(elementId);
+      return (
+        !!element &&
+        isEmbeddableElement(element) &&
+        !element.locked &&
+        this.isInteractionEnabled() &&
+        this.isEmbedsEnabled() &&
+        !this.state.viewModeEnabled &&
+        this.state.activeTool.type === "selection" &&
+        !isHoldingSpace &&
+        !isPanning &&
+        gesture.pointers.size < 2
+      );
+    };
+    if (!allowed() || this.finishEmbeddedDrag) {
+      return null;
+    }
+    const selected = this.state.selectedElementIds[elementId]
+      ? {
+          selectedElementIds: this.state.selectedElementIds,
+          selectedGroupIds: this.state.selectedGroupIds,
+          editingGroupId: this.state.editingGroupId,
+        }
+      : selectGroupsForSelectedElements(
+          {
+            selectedElementIds: { [elementId]: true },
+            editingGroupId: this.state.editingGroupId,
+          },
+          this.scene.getNonDeletedElements(),
+          this.state,
+          this,
+        );
+    const selectionState = { ...this.state, ...selected };
+    const elements = this.scene
+      .getSelectedElements({
+        ...selectionState,
+        includeBoundTextElement: true,
+        includeElementsInFrames: true,
+      })
+      .filter((e) => !e.locked);
+    if (!elements.length) {
+      return null;
+    }
+    const originalElements = new Map(
+      this.scene.getNonDeletedElements().map((e) => [e.id, deepCopyElement(e)]),
+    );
+    const geometry = (e: ExcalidrawElement) =>
+      JSON.stringify([
+        e.x,
+        e.y,
+        e.width,
+        e.height,
+        ...(isArrowElement(e) ? [e.points, e.startBinding, e.endBinding] : []),
+      ]);
+    const lastGeometry = new Map<string, string>();
+    let moved = false;
+    let ended = false;
+    SnapCache.destroy();
+    this.setState({ ...selected, activeEmbeddable: null });
+    const end = withBatchedUpdates((cancel = false) => {
+      if (ended) {
+        return;
+      }
+      ended = true;
+      this.finishEmbeddedDrag = null;
+      this.ownerWindow.removeEventListener("blur", cancelDrag);
+      this.ownerWindow.removeEventListener("keydown", escape, true);
+      if (cancel && moved) {
+        // Restore geometry, not application data changed while the timer ran.
+        for (const element of this.scene.getNonDeletedElements()) {
+          const original = originalElements.get(element.id);
+          if (!original || lastGeometry.get(element.id) !== geometry(element)) {
+            continue;
+          }
+          if (isArrowElement(element) && isArrowElement(original)) {
+            this.scene.mutateElement(element, {
+              x: original.x,
+              y: original.y,
+              width: original.width,
+              height: original.height,
+              points: original.points,
+              startBinding: original.startBinding,
+              endBinding: original.endBinding,
+            });
+          } else if (element.x !== original.x || element.y !== original.y) {
+            this.scene.mutateElement(element, { x: original.x, y: original.y });
+          }
+        }
+      }
+      if (moved && !cancel) {
+        this.scene.replaceAllElements(
+          updateFrameMembershipOfSelectedElements(
+            this.scene.getElementsIncludingDeleted(),
+            this.state,
+            this,
+          ),
+        );
+        this.store.scheduleCapture();
+      }
+      SnapCache.destroy();
+      this.setState({
+        selectedElementsAreBeingDragged: false,
+        snapLines: [],
+        cursorButton: "up",
+      });
+      this.cursor.reset();
+    });
+    const cancelDrag = () => end(true);
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        end(true);
+      }
+    };
+    this.finishEmbeddedDrag = cancelDrag;
+    this.ownerWindow.addEventListener("blur", cancelDrag);
+    this.ownerWindow.addEventListener("keydown", escape, true);
+    return {
+      move: (input: {
+        deltaX: number;
+        deltaY: number;
+        shiftKey: boolean;
+        ctrlKey: boolean;
+        metaKey: boolean;
+        altKey: boolean;
+      }) => {
+        let accepted = false;
+        withBatchedUpdates(() => {
+          if (ended) {
+            return false;
+          }
+          if (
+            !allowed() ||
+            elements.some(
+              (e) => !this.scene.getNonDeletedElementsMap().has(e.id),
+            )
+          ) {
+            end(true);
+            return false;
+          }
+          if (![input.deltaX, input.deltaY].every(Number.isFinite)) {
+            return false;
+          }
+          const offset = {
+            x: input.deltaX / this.state.zoom.value,
+            y: input.deltaY / this.state.zoom.value,
+          };
+          if (input.shiftKey) {
+            if (Math.abs(offset.x) < Math.abs(offset.y)) {
+              offset.x = 0;
+            } else {
+              offset.y = 0;
+            }
+          }
+          moved = true;
+          this.setState({
+            selectedElementsAreBeingDragged: true,
+            cursorButton: "down",
+          });
+          this.maybeCacheVisibleGaps(input, elements);
+          this.maybeCacheReferenceSnapPoints(input, elements);
+          const { snapOffset, snapLines } = snapDraggedElements(
+            [...originalElements.values()],
+            offset,
+            this,
+            input,
+            this.scene.getNonDeletedElementsMap(),
+          );
+          const before = new Map(
+            this.scene.getNonDeletedElements().map((e) => [e.id, geometry(e)]),
+          );
+          dragSelectedElements(
+            { originalElements },
+            elements,
+            offset,
+            this.scene,
+            snapOffset,
+            input[KEYS.CTRL_OR_CMD] ? null : this.getEffectiveGridSize(),
+          );
+          for (const e of this.scene.getNonDeletedElements()) {
+            if (before.get(e.id) !== geometry(e)) {
+              lastGeometry.set(e.id, geometry(e));
+            }
+          }
+          this.setState({ snapLines });
+          this.cursor.set(CURSOR_TYPE.GRABBING);
+          accepted = true;
+        })();
+        return accepted;
+      },
+      end,
+    };
+  };
+
   public scheduleCapture = () => this.store.scheduleCapture();
 
   // Lifecycle
@@ -3867,20 +4133,7 @@ class App extends React.Component<AppProps, AppState> {
         observeEmbeddedPinch(
           this.excalidrawContainerRef.current,
           () => this.isNavigationEnabled(),
-          (ratio, previous, current) => {
-            this.viewport.translate((state) => {
-              const nextZoom = getNormalizedZoom(state.zoom.value * ratio);
-              const zoomed = getViewportForZoomWithScrollConstraints(
-                { viewportX: previous.x, viewportY: previous.y, nextZoom },
-                state,
-              );
-              return {
-                ...zoomed,
-                scrollX: zoomed.scrollX + (current.x - previous.x) / nextZoom,
-                scrollY: zoomed.scrollY + (current.y - previous.y) / nextZoom,
-              };
-            });
-          },
+          this.applyEmbeddedPinch,
         ),
       );
     }
@@ -3929,6 +4182,7 @@ class App extends React.Component<AppProps, AppState> {
   }
 
   public componentWillUnmount() {
+    this.finishEmbeddedDrag?.();
     // we're recreating the api object reference so that the
     // <ExcalidrawAPIContext.Provider/> picks up on it
     this.api = { ...this.api, isDestroyed: true };

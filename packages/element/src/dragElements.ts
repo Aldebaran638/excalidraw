@@ -33,7 +33,7 @@ import type { Scene } from "./Scene";
 import type { ExcalidrawElement, ExcalidrawTextElement } from "./types";
 
 export const dragSelectedElements = (
-  pointerDownState: PointerDownState,
+  pointerDownState: Pick<PointerDownState, "originalElements">,
   _selectedElements: NonDeletedExcalidrawElement[],
   offset: { x: number; y: number },
   scene: Scene,
@@ -202,7 +202,7 @@ const calculateOffset = (
 };
 
 const updateElementCoords = (
-  pointerDownState: PointerDownState,
+  pointerDownState: Pick<PointerDownState, "originalElements">,
   element: ExcalidrawElement,
   scene: Scene,
   dragOffset: { x: number; y: number },

@@ -1,3 +1,4 @@
+import { installHtmlCanvasDrag } from "./htmlCanvasDrag";
 import { installHtmlCanvasSurface } from "./htmlCanvasSurface";
 import { installIframeOverlayScrollbars } from "./iframeOverlayScrollbars";
 import { HTML_THEME_CSS } from "./htmlEnvironment";
@@ -27,6 +28,7 @@ function bootstrap(
   inspectContrast: typeof inspectHeadingContrast,
   installSurface: typeof installHtmlCanvasSurface,
   transparentCanvas: boolean,
+  installDrag: typeof installHtmlCanvasDrag,
 ) {
   const win = window;
   // Capture native references before generated code can replace its globals.
@@ -111,6 +113,7 @@ function bootstrap(
       >();
       let disposed = false;
       let disposeScrollbars = () => {};
+      let drag: ReturnType<typeof installHtmlCanvasDrag> | undefined;
       let surface: ReturnType<typeof installHtmlCanvasSurface> | undefined;
       const keyFor = (key: string) => {
         if (typeof key !== "string" || !key || key.length > 200) {
@@ -153,6 +156,7 @@ function bootstrap(
         ended = true;
         disposeScrollbars();
         surface?.dispose();
+        drag?.dispose();
         restoreObserver.disconnect();
         for (const timer of timers.values()) {
           win.clearInterval(timer.id);
@@ -626,6 +630,14 @@ function bootstrap(
           }
           return;
         }
+        if (event.data.type === "canvas_gestures") {
+          drag?.setEnabled(event.data.data === true);
+          return;
+        }
+        if (event.data.type === "canvas_drag_cancel") {
+          drag?.cancel();
+          return;
+        }
         if (event.data.type === "presentation" && transparentCanvas) {
           surface?.setTransparent(event.data.data?.transparent === true);
           return;
@@ -1011,6 +1023,7 @@ function bootstrap(
       }
       if (transparentCanvas) {
         surface = installSurface(doc, true);
+        drag = installDrag(doc, send);
       }
       disposeScrollbars = installScrollbars(doc);
       send("ready");
@@ -1042,5 +1055,5 @@ export const htmlBootstrap = (
     verifyInteractions,
   )},${inspectNodeInteractions.toString()},${inspectHeadingContrast.toString()},${installHtmlCanvasSurface.toString()},${JSON.stringify(
     transparentCanvas,
-  )})</script>`;
+  )},${installHtmlCanvasDrag.toString()})</script>`;
 };

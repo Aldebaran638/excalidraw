@@ -456,6 +456,11 @@ export const useCanvasHtmlApps = ({
       <CanvasApp
         element={element}
         selected={Boolean(appState.selectedElementIds[element.id])}
+        dragEnabled={
+          !element.locked &&
+          !appState.viewModeEnabled &&
+          appState.activeTool.type === "selection"
+        }
         zoom={appState.zoom.value}
         app={app}
         api={api}
@@ -548,6 +553,7 @@ export const useCanvasHtmlApps = ({
 const CanvasApp = ({
   element,
   selected,
+  dragEnabled,
   zoom,
   app,
   api,
@@ -558,6 +564,7 @@ const CanvasApp = ({
 }: {
   element: ExcalidrawEmbeddableElement;
   selected: boolean;
+  dragEnabled: boolean;
   zoom: number;
   app: CanvasHtmlApp;
   api: ExcalidrawImperativeAPI;
@@ -681,6 +688,15 @@ const CanvasApp = ({
     // Source/state are frozen for this immutable version. Input changes don't re-read files.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [app.appId, app.version, app.sourceHash, noteId, json]);
+  const drag =
+    useRef<ReturnType<ExcalidrawImperativeAPI["beginEmbeddedDrag"]>>(null);
+  useEffect(
+    () => () => {
+      drag.current?.end(true);
+      drag.current = null;
+    },
+    [api, element.id, noteId],
+  );
   return (
     <div
       ref={node}
@@ -728,6 +744,32 @@ const CanvasApp = ({
       <div data-embeddable-control className="canvas-html-app-content">
         <HtmlAppView
           transparentCanvas
+          dragEnabled={dragEnabled}
+          onCanvasPinch={(ratio, previous, current) =>
+            api.applyEmbeddedPinch(ratio, previous, current)
+          }
+          onCanvasSpace={(pressed) =>
+            api.setEmbeddedSpacePressed(element.id, pressed)
+          }
+          onCanvasDrag={(phase, data) => {
+            if (phase === "start") {
+              if (
+                node.current
+                  ?.closest("[data-embeddable-controls-enabled]")
+                  ?.getAttribute("data-embeddable-controls-enabled") !== "true"
+              ) {
+                return false;
+              }
+              drag.current?.end(true);
+              drag.current = api.beginEmbeddedDrag(element.id);
+              return !!drag.current;
+            }
+            if (phase === "move" && data) {
+              return drag.current?.move(data) ?? false;
+            }
+            drag.current?.end(phase === "cancel");
+            drag.current = null;
+          }}
           onInteract={(shift) => {
             const state = api.getAppState();
             const elements = api.getSceneElements();
