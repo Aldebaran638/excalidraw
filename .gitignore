@@ -29,3 +29,6 @@ meta*.json
 .claude
 server-dist
 .local-data/
+/notes/**
+!/notes/**/
+!/notes/**/.gitkeep
