@@ -48,6 +48,8 @@ import { ChatHtmlStore } from "../chatHtmlStore";
 
 import { readBody, sendJson } from "../notes";
 
+import { resolveChatRegeneration } from "./chatRegeneration";
+
 import { ToolLoopBudget } from "./toolLoopBudget";
 import {
   agentTask,
@@ -739,18 +741,14 @@ export const createChatService = async (
           );
         }
       }
-      const retryIndex = body.retryMessageId
-        ? before.messages.findIndex(
-            (message) =>
-              message.id === body.retryMessageId && message.role === "user",
-          )
-        : -1;
-      const retainedArtifacts =
-        retryIndex >= 0
-          ? before.messages
-              .slice(retryIndex + 1)
-              .flatMap((message) => message.artifacts || [])
-          : [];
+      const { editMessageId, replacement: answerReplacement } =
+        resolveChatRegeneration(before.messages, body);
+      const retainedArtifacts = answerReplacement?.answer.artifacts || [];
+      const retainedHtml =
+        answerReplacement?.answer.blocks?.filter(
+          (block) => block.type === "html" && block.saved && block.complete,
+        ) || [];
+      const retainedBlockIds = new Set(retainedHtml.map((block) => block.id));
       const duplicate = before.messages.find(
         (message) =>
           message.turnId === body.turnId && message.role === "assistant",
@@ -763,10 +761,9 @@ export const createChatService = async (
         throw new ChatError(409, "会话已更新，请重新打开后发送");
       }
       if (
-        body.replaceMessageId !== undefined &&
+        editMessageId !== undefined &&
         !before.messages.some(
-          (message) =>
-            message.id === body.replaceMessageId && message.role === "user",
+          (message) => message.id === editMessageId && message.role === "user",
         )
       ) {
         throw new ChatError(400, "要编辑或重新生成的问题不存在");
@@ -784,15 +781,18 @@ export const createChatService = async (
       });
       active.set(key, { abort, turnId: body.turnId, done, finish });
       const assistant: ChatMessage = {
-        id: randomUUID(),
+        id: answerReplacement?.answer.id || randomUUID(),
         turnId: body.turnId,
         role: "assistant",
         content: "",
         thinking,
-        createdAt: Date.now(),
+        createdAt: answerReplacement?.answer.createdAt ?? Date.now(),
         status: "generating",
         activities: [],
-        blocks: [],
+        blocks: structuredClone(retainedHtml),
+        ...(retainedArtifacts.length
+          ? { artifacts: structuredClone(retainedArtifacts) }
+          : {}),
       };
       let session: ChatSession;
       let started = false;
@@ -838,7 +838,9 @@ export const createChatService = async (
       const persist = () =>
         store.update(noteId, sessionId, (current) => {
           const index = current.messages.findIndex(
-            (message) => message.id === assistant.id,
+            (message) =>
+              message.id === assistant.id &&
+              message.turnId === assistant.turnId,
           );
           if (index >= 0) {
             current.messages[index] = structuredClone(assistant);
@@ -867,7 +869,7 @@ export const createChatService = async (
       const contextEnd = before.messages.findIndex(
         (message) =>
           message.role === "user" &&
-          message.id === (body.replaceMessageId || body.retryMessageId),
+          message.id === (editMessageId || answerReplacement?.question.id),
       );
       const task = agentTask(
         body.content,
@@ -1149,10 +1151,10 @@ export const createChatService = async (
           if (current.revision !== before.revision) {
             throw new ChatError(409, "会话已更新");
           }
-          if (body.replaceMessageId) {
+          if (editMessageId) {
             const index = current.messages.findIndex(
               (message) =>
-                message.id === body.replaceMessageId && message.role === "user",
+                message.id === editMessageId && message.role === "user",
             );
             // Keep the entire old conversation, including saved application references.
             // Only the active branch participates in the next model request.
@@ -1166,23 +1168,18 @@ export const createChatService = async (
             ];
             current.messages = current.messages.slice(0, index);
           }
-          const retry =
-            body.retryMessageId &&
-            current.messages.find(
-              (message) =>
-                message.id === body.retryMessageId && message.role === "user",
+          if (answerReplacement) {
+            const index = current.messages.findIndex(
+              (message) => message.id === answerReplacement.answer.id,
             );
-          if (
-            body.retryMessageId &&
-            (!retry ||
-              retry.content !== body.content ||
-              current.messages
-                .filter((message) => message.role === "user")
-                .at(-1)?.id !== retry.id)
-          ) {
-            throw new ChatError(400, "只能重试最后一个问题");
-          }
-          if (!retry) {
+            if (
+              index < 0 ||
+              current.messages[index].turnId !== answerReplacement.answer.turnId
+            ) {
+              throw new ChatError(409, "原回答已变化，请重新加载后再试");
+            }
+            current.messages[index] = assistant;
+          } else {
             current.messages.push({
               id: randomUUID(),
               turnId: body.turnId,
@@ -1191,8 +1188,8 @@ export const createChatService = async (
               createdAt: Date.now(),
               status: "complete",
             });
+            current.messages.push(assistant);
           }
-          current.messages.push(assistant);
           if (!current.manualTitle && current.title === "新对话") {
             current.title = Array.from(body.content.trim())
               .slice(0, 24)
@@ -1255,7 +1252,11 @@ export const createChatService = async (
         let characters = JSON.stringify(messages).length;
         let userTurns = 0;
         const history: ModelMessage[] = [];
-        for (const message of session.messages.slice(0, -1).reverse()) {
+        const contextMessages = session.messages.slice(
+          0,
+          session.messages.findIndex((message) => message.id === assistant.id),
+        );
+        for (const message of [...contextMessages].reverse()) {
           const historyContent = message.blocks?.length
             ? message.blocks
                 .map((block) =>
@@ -2125,9 +2126,8 @@ export const createChatService = async (
           turnId: body.turnId,
           assistantMessageId: assistant.id,
           userContent: body.content,
-          uiMessageIds: session.messages
-            .slice(0, -1)
-            .map((message) => message.id),
+          uiMessageIds: contextMessages.map((message) => message.id),
+          regenerate: Boolean(answerReplacement),
           config,
           thinking,
           signal: abort.signal,
@@ -2360,7 +2360,12 @@ export const createChatService = async (
                       (a) =>
                         a.name === "edit_app_source" && a.status === "complete",
                     )
-                  : assistant.blocks!.some((b) => b.type === "html" && b.saved);
+                  : assistant.blocks!.some(
+                      (b) =>
+                        b.type === "html" &&
+                        b.saved &&
+                        !retainedBlockIds.has(b.id),
+                    );
               if (
                 realOutput &&
                 (await reviewPreview(responseTextStart)) === "retry"

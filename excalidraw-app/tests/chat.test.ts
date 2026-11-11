@@ -6,6 +6,7 @@ import os from "node:os";
 import { randomUUID } from "node:crypto";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 import { ChatStore } from "../server/chatStore";
 import { createChatService } from "../server/agent/chat";
@@ -95,7 +96,7 @@ describe("note-owned chat", () => {
       });
     },
   );
-  it("edits and regenerates historical questions without losing the original conversation", async () => {
+  it("edits historical questions but treats unchanged legacy edits as in-place regeneration", async () => {
     const { dir, noteId } = await fixture();
     const inputs: string[] = [];
     const transport: typeof fetch = async (_url, init) => {
@@ -163,13 +164,207 @@ describe("note-owned chat", () => {
       "edited-question",
       "answer-4",
     ]);
-    expect(session.previousVersions?.[1].messages).toEqual(edited);
+    expect(session.previousVersions).toHaveLength(1);
+    expect(session.messages[0]).toEqual(edited[0]);
+    expect(session.messages[1].id).toBe(edited[1].id);
     const stored = await new ChatStore(dir).read(noteId, session.id);
     expect(stored.previousVersions).toEqual(session.previousVersions);
     expect(await new ChatStore(dir).list(noteId)).not.toHaveProperty(
       "0.previousVersions",
     );
     expect(inputs).toHaveLength(4);
+  });
+  it("regenerates one historical reply in place and restores the full linear context afterward", async () => {
+    const { dir, noteId } = await fixture();
+    const requests: any[] = [];
+    const service = await createChatService(
+      dir,
+      { baseUrl: "http://fixture", model: "qwen" },
+      async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return stream([
+          choice({ content: `ANSWER_${requests.length}_END` }),
+          choice({}, "stop"),
+        ]);
+      },
+    );
+    cleanups.push(service.close);
+    const base = `${await serve(service.handle)}/api/notes/${noteId}/chats`;
+    let session: ChatSession = await (
+      await fetch(base, { method: "POST" })
+    ).json();
+    const send = async (
+      content: string,
+      regenerateMessageId?: string,
+      revision = session.revision,
+    ) => {
+      const response = await fetch(`${base}/${session.id}/turns`, {
+        method: "POST",
+        body: JSON.stringify({
+          turnId: randomUUID(),
+          content,
+          regenerateMessageId,
+          revision,
+          snapshot: { capturedAt: Date.now(), elements: [] },
+        }),
+      });
+      if (!response.ok) {
+        return response.status;
+      }
+      for await (const frame of readSSE(response.body!)) {
+        const e = JSON.parse(frame.data);
+        if (e.session) {
+          session = e.session;
+        }
+      }
+      return response.status;
+    };
+    await send("QUESTION_A");
+    await send("QUESTION_B");
+    await send("QUESTION_C");
+    const original = structuredClone(session.messages);
+    const persistedFolder = path.join(dir, ".chats", noteId, "pi", session.id);
+    SessionManager.continueRecent(
+      persistedFolder,
+      persistedFolder,
+    ).appendCompaction("FUTURE_SUMMARY_SECRET", null, 0);
+    expect(await send("QUESTION_A", original[1].id, 0)).toBe(409);
+    expect(await send("QUESTION_A", randomUUID())).toBe(400);
+    expect(await send("QUESTION_A", original[1].id)).toBe(200);
+    expect(session.messages).toHaveLength(6);
+    expect(session.messages[0]).toEqual(original[0]);
+    expect(session.messages[1]).toMatchObject({
+      id: original[1].id,
+      createdAt: original[1].createdAt,
+      content: "ANSWER_4_END",
+      status: "complete",
+    });
+    expect(session.messages[1].turnId).not.toBe(original[1].turnId);
+    expect(session.messages.slice(2)).toEqual(original.slice(2));
+    expect(session.previousVersions).toBeUndefined();
+    const regenerated = JSON.stringify(requests[3].messages);
+    expect(regenerated).not.toMatch(
+      /QUESTION_B|QUESTION_C|ANSWER_1_END|ANSWER_2_END|ANSWER_3_END|FUTURE_SUMMARY_SECRET/,
+    );
+    await send("QUESTION_D");
+    const continued = JSON.stringify(requests[4].messages);
+    expect(continued).toContain("ANSWER_4_END");
+    expect(continued).toContain("QUESTION_B");
+    expect(continued).toContain("ANSWER_3_END");
+    expect(continued).not.toContain("ANSWER_1_END");
+    expect(continued).not.toContain("FUTURE_SUMMARY_SECRET");
+    const stored = await new ChatStore(dir).read(noteId, session.id);
+    expect(stored.messages).toEqual(session.messages);
+    const piDir = path.join(dir, ".chats", noteId, "pi", session.id);
+    const files = (await fs.readdir(piDir)).filter((name) =>
+      name.endsWith(".jsonl"),
+    );
+    expect(files).toHaveLength(1);
+    const entries = (await fs.readFile(path.join(piDir, files[0]), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(entries.some((e) => e.type === "branch_summary")).toBe(false);
+    const parents = new Set<string>();
+    for (const e of entries) {
+      if (e.parentId) {
+        expect(parents.has(e.parentId)).toBe(false);
+        parents.add(e.parentId);
+      }
+    }
+  });
+  it("keeps later messages through a failed historical regeneration and its retry", async () => {
+    const { dir, noteId } = await fixture();
+    const store = new ChatStore(dir);
+    let session = await store.create(noteId);
+    const original: ChatSession["messages"] = [
+      {
+        id: randomUUID(),
+        turnId: randomUUID(),
+        role: "user",
+        content: "FIRST_QUESTION",
+        status: "complete",
+        createdAt: 1,
+      },
+      {
+        id: randomUUID(),
+        turnId: randomUUID(),
+        role: "assistant",
+        content: "ORIGINAL_ANSWER",
+        status: "complete",
+        createdAt: 0,
+      },
+      {
+        id: randomUUID(),
+        turnId: randomUUID(),
+        role: "user",
+        content: "KEEP_FUTURE_QUESTION",
+        status: "complete",
+        createdAt: 2,
+      },
+      {
+        id: randomUUID(),
+        turnId: randomUUID(),
+        role: "assistant",
+        content: "KEEP_FUTURE_ANSWER",
+        status: "complete",
+        createdAt: 2,
+      },
+    ];
+    session = await store.update(noteId, session.id, (current) => {
+      current.messages = structuredClone(original);
+    });
+    let calls = 0;
+    const service = await createChatService(
+      dir,
+      { baseUrl: "http://fixture", model: "qwen" },
+      async (_url, init) => {
+        calls++;
+        const request = JSON.parse(String(init?.body));
+        expect(JSON.stringify(request.messages)).not.toMatch(
+          /ORIGINAL_ANSWER|KEEP_FUTURE|PARTIAL_FAILED_TEXT/,
+        );
+        return calls === 1
+          ? stream([
+              choice({ content: "PARTIAL_FAILED_TEXT" }),
+              {
+                error: {
+                  code: "request_queue_timeout",
+                  message: "queue failure",
+                },
+              },
+            ])
+          : stream([choice({ content: "RECOVERED" }), choice({}, "stop")]);
+      },
+    );
+    cleanups.push(service.close);
+    const base = `${await serve(service.handle)}/api/notes/${noteId}/chats/${
+      session.id
+    }`;
+    for (const expected of ["failed", "complete"]) {
+      const response = await fetch(`${base}/turns`, {
+        method: "POST",
+        body: JSON.stringify({
+          turnId: randomUUID(),
+          content: "FIRST_QUESTION",
+          regenerateMessageId: original[1].id,
+          revision: session.revision,
+          snapshot: { capturedAt: 1, elements: [] },
+        }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      session = await store.read(noteId, session.id);
+      expect(session.messages[1]).toMatchObject({
+        id: original[1].id,
+        createdAt: original[1].createdAt,
+        status: expected,
+      });
+      expect(session.messages.slice(2)).toEqual(original.slice(2));
+      expect(session.previousVersions).toBeUndefined();
+    }
+    expect(calls).toBe(2);
+    expect(session.messages[1].content).toBe("RECOVERED");
   });
   it.each([false, true])(
     "forwards thinking=%s and streams reasoning separately from answers",
@@ -418,6 +613,9 @@ describe("note-owned chat", () => {
       retried.messages.filter((message) => message.role === "user"),
     ).toHaveLength(1);
     expect(retried.messages.at(-1)?.content).toBe("重试成功");
+    expect(retried.messages).toHaveLength(2);
+    expect(retried.messages[1].id).toBe(failed.messages[1].id);
+    expect(retried.previousVersions).toBeUndefined();
   });
   it("rejects path access, foreign elements and preserves only safe snapshot fields", () => {
     const snapshot = sanitizeSnapshot({

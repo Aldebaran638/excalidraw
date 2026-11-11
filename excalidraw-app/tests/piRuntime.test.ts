@@ -210,6 +210,15 @@ it("recovers a pending UI projection without resurrecting edited history", async
     });
     await recoverPiProjections(directory, store);
     expect((await store.read(noteId, session.id)).messages).toEqual([complete]);
+    const replacement = { ...message, turnId: randomUUID() };
+    await store.update(noteId, session.id, (current) => {
+      current.messages[0] = replacement;
+    });
+    await checkpointPiProjection(directory, noteId, session.id, complete);
+    await recoverPiProjections(directory, store);
+    expect((await store.read(noteId, session.id)).messages).toEqual([
+      replacement,
+    ]);
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }

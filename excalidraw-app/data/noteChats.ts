@@ -948,11 +948,15 @@ export class NoteChatController {
       this.error(`${noteId}/${id}`, error);
     }
   }
+  async regenerate(noteId: string, id: string, messageId: string) {
+    return this.send(noteId, id, undefined, undefined, messageId);
+  }
   async send(
     noteId: string,
     id: string,
     retryMessageId?: string,
     replacement?: { messageId: string; content: string },
+    regenerateMessageId?: string,
   ) {
     const key = `${noteId}/${id}`;
     if (this.unsaved.has(key)) {
@@ -963,11 +967,27 @@ export class NoteChatController {
       return;
     }
     const session = this.state.sessions[key];
+    const answerIndex =
+      session?.messages.findIndex(
+        (message) =>
+          message.id === regenerateMessageId && message.role === "assistant",
+      ) ?? -1;
+    const regeneratedQuestion =
+      answerIndex >= 0
+        ? session!.messages
+            .slice(0, answerIndex)
+            .findLast((message) => message.role === "user")
+        : undefined;
+    if (regenerateMessageId && !regeneratedQuestion) {
+      this.error(key, new Error("要重新生成的回答不存在，请重新加载会话"));
+      return;
+    }
     const retry = session?.messages.find(
       (message) => message.id === retryMessageId && message.role === "user",
     );
     const content =
       replacement?.content ??
+      regeneratedQuestion?.content ??
       retry?.content ??
       this.state.ui[noteId]?.drafts[id]?.trim();
     if (
@@ -1091,6 +1111,7 @@ export class NoteChatController {
             turnId,
             content,
             retryMessageId,
+            regenerateMessageId,
             replaceMessageId: replacement?.messageId,
             thinking: this.state.ui[noteId]?.thinking === true,
             snapshot,
@@ -1285,6 +1306,7 @@ export class NoteChatController {
           event.type === "start" &&
           !retry &&
           !replacement &&
+          !regenerateMessageId &&
           this.state.ui[noteId]?.drafts[id]?.trim() === content.trim()
         ) {
           this.setDraft(noteId, id, "");

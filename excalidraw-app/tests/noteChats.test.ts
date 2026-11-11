@@ -402,3 +402,107 @@ describe("application-owned chat controller", () => {
     controller.dispose();
   });
 });
+
+it("regenerates a specific answer without editing its question or clearing the draft", async () => {
+  const messages: ChatSession["messages"] = [
+    {
+      id: "question-one",
+      turnId: "turn-one",
+      role: "user",
+      content: "first",
+      status: "complete",
+      createdAt: 1,
+    },
+    {
+      id: "answer-one",
+      turnId: "turn-one",
+      role: "assistant",
+      content: "old answer",
+      status: "complete",
+      createdAt: 1,
+    },
+    {
+      id: "question-two",
+      turnId: "turn-two",
+      role: "user",
+      content: "later",
+      status: "complete",
+      createdAt: 2,
+    },
+    {
+      id: "answer-two",
+      turnId: "turn-two",
+      role: "assistant",
+      content: "keep later",
+      status: "complete",
+      createdAt: 2,
+    },
+  ];
+  const initial = { ...session, messages };
+  const fetch = vi.fn(async (url, init) => {
+    if (String(url).endsWith("/turns")) {
+      const body = JSON.parse(String(init?.body));
+      expect(body.regenerateMessageId).toBe("answer-one");
+      expect(body.replaceMessageId).toBeUndefined();
+      expect(body.retryMessageId).toBeUndefined();
+      expect(body.content).toBe("first");
+      const changed = {
+        ...initial,
+        revision: 2,
+        messages: messages.map((m) =>
+          m.id === "answer-one"
+            ? { ...m, turnId: body.turnId, content: "new answer" }
+            : m,
+        ),
+      };
+      const events = [
+        {
+          type: "start",
+          noteId,
+          sessionId: session.id,
+          turnId: body.turnId,
+          session: {
+            ...changed,
+            messages: changed.messages.map((m) =>
+              m.id === "answer-one"
+                ? { ...m, status: "generating", content: "" }
+                : m,
+            ),
+          },
+        },
+        {
+          type: "done",
+          saved: true,
+          noteId,
+          sessionId: session.id,
+          turnId: body.turnId,
+          session: changed,
+        },
+      ];
+      return new Response(
+        events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(""),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    }
+    return String(url).endsWith(`/chats/${session.id}`)
+      ? json(initial)
+      : json({ sessions: [initial] });
+  }) as typeof globalThis.fetch;
+  const controller = new NoteChatController(
+    browser(fetch),
+    async () => ({ noteId, name: "a.excalidraw" }),
+    () => ({ capturedAt: 1, elements: [] }),
+  );
+  controller.bind({ noteId, name: "a.excalidraw", documentSession: 1 });
+  await controller.select(noteId, session.id);
+  controller.setDraft(noteId, session.id, "first");
+  await controller.regenerate(noteId, session.id, "answer-one");
+  const current = controller.getState().sessions[`${noteId}/${session.id}`];
+  expect(current.messages.map((m) => m.id)).toEqual(messages.map((m) => m.id));
+  expect(current.messages[1].content).toBe("new answer");
+  expect(current.messages.slice(2)).toEqual(messages.slice(2));
+  expect(current.previousVersions).toBeUndefined();
+  expect(controller.isUnsaved(noteId, session.id)).toBe(false);
+  expect(controller.getState().ui[noteId].drafts[session.id]).toBe("first");
+  controller.dispose();
+});

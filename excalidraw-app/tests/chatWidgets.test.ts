@@ -453,7 +453,9 @@ describe("chat widget drafts", () => {
     await retry.text();
     expect(generations).toBe(2);
     const retried: ChatSession = await (await fetch(base)).json();
-    expect(retried.messages).toHaveLength(3);
+    expect(retried.messages).toHaveLength(2);
+    expect(retried.messages[1].id).toBe(stored.messages[1].id);
+    expect(retried.messages[1].artifacts).toEqual(stored.messages[1].artifacts);
     expect(retried.messages.at(-1)?.status).toBe("complete");
   });
   it("cancels nested generation without publishing a partial artifact", async () => {

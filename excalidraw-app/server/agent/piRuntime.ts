@@ -38,6 +38,7 @@ type Input = {
   turnId: string;
   assistantMessageId: string;
   userContent: string;
+  regenerate?: boolean;
   uiMessageIds: string[];
   config: AIConfig;
   thinking: boolean;
@@ -117,10 +118,21 @@ export async function runNoteAgent(input: Input) {
       JSON.stringify((entry.data as any)?.uiMessageIds) ===
         JSON.stringify(contextIds),
   );
-  if (previous) {
-    manager.branch(previous.id);
-  } else if (manager.getEntryCount()) {
-    manager.branchWithSummary(null, "从当前笔记会话分支恢复");
+  const reuseContext =
+    !input.regenerate && previous && manager.getLeafId() === previous.id;
+  if (!reuseContext && manager.getEntryCount()) {
+    // An append-only SDK checkpoint resets effective context without forking the
+    // session tree, replaying failed tool calls, or retaining a future summary.
+    manager.appendCompaction(
+      "Context synchronized with the active note conversation; only the following messages are current.",
+      null,
+      0,
+      {
+        notesContextReset: true,
+        turnId: input.turnId,
+        regenerate: Boolean(input.regenerate),
+      },
+    );
   }
 
   const initial = input.messages.slice();
@@ -138,7 +150,7 @@ export async function runNoteAgent(input: Input) {
   if (currentUserIndex >= 0) {
     history.splice(currentUserIndex);
   }
-  if (!previous) {
+  if (!reuseContext) {
     for (const message of history) {
       if (message.role === "user") {
         manager.appendMessage({

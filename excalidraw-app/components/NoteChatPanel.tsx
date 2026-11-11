@@ -645,16 +645,7 @@ export const NoteChatPanel = ({
                     icon={RetryIcon}
                     disabled={generating || running}
                     onClick={() => {
-                      const question = visibleMessages
-                        .slice(0, messageIndex)
-                        .reverse()
-                        .find((item) => item.role === "user");
-                      if (question) {
-                        void controller.send(noteId, selected, undefined, {
-                          messageId: question.id,
-                          content: question.content,
-                        });
-                      }
+                      void controller.regenerate(noteId, selected, message.id);
                     }}
                   />
                 )}
