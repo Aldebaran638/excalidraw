@@ -4,6 +4,7 @@
 
 ## Project skill
 
+- For development, review, commit, merge or release work, first read and apply `.agents/skills/excalidraw-branch-workflow/SKILL.md`. It defines branch roles and separate user approvals for task integration and product release.
 - For design, implementation or review of canvas tools, AI widgets, note workflows and application UI, first read and apply `.agents/skills/excalidraw-product-engineering/SKILL.md`. It defines this project's UX, visual quality, native architecture and acceptance requirements; it does not grant additional execution permissions.
 
 ## Preview service
@@ -15,4 +16,4 @@
 
 ## Local version management
 
-- The user delegates local commit and branch organization to the agent. Keep `aldebaran` as the integration branch; develop substantial modules on short-lived `feat/*` branches and fast-forward merge only after acceptance. Commit related, independently runnable changes together. Do not push, rewrite existing commits, or include user note/plan edits by default. Record baseline and feature commit IDs in the handoff.
+- `master` tracks Excalidraw upstream; `aldebaran` is the product release branch; `develop` is the integration branch. Make changes only on task branches (`feat/*`, `fix/*`, `chore/*`) created from `develop`. User confirmation is required before merging a task into `develop`; separate explicit release approval is required before merging into `aldebaran` or deploying production. Follow the branch-workflow skill for upstream integration, acceptance and cleanup. Do not push, rewrite existing commits, or include user note/plan edits by default. Record baseline and feature commit IDs in the handoff.

@@ -44,6 +44,7 @@ description: Design, implement and review this project's Excalidraw features wit
 
 ## 架构与数据
 
+- 分支与发布遵循项目 `excalidraw-branch-workflow` skill：`master` 同步上游，`aldebaran` 为产品主分支，`develop` 集成开发；修改在次开发分支进行。功能合入 `develop` 和发布到 `aldebaran` 分别需要用户批准，测试通过不能代替批准，不沿用此前自动合并的约定。
 - 沿用原生元素、历史和扩展接口；应用业务放在应用层，共享定义及运行时集中维护，核心画布只增加通用能力。不为新功能建立平行场景系统。
 - 笔记 Agent 使用 Pi SDK 编排模型、工具循环和会话上下文；笔记工具、源码候选、预览验收与确认应用由场景层负责。新增场景通过配置提示、工具及资源接入，不重新建立模型循环或叠加通用重试。Pi 会话保存在当前笔记目录 `.chats/<noteId>/pi/<sessionId>/`，与界面记录通过稳定身份及持久提交关联；不能用修改内存消息数组代替历史恢复。
 - Agent 专属服务端代码统一放在 `excalidraw-app/server/agent/`，应用组装从该目录 `index.ts` 接入；新增编排、模型通信、工具、恢复及通信日志模块不要散落到服务端根目录。笔记身份、会话持久化和 HTML 源码／版本等被多业务使用的能力保留在共享层，不能为了目录归类让它们反向依赖 Agent。目录组织不要求拆成独立进程或服务。
