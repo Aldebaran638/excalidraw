@@ -18,6 +18,7 @@ import {
   playerStopFilledIcon,
   CloseIcon,
   historyIcon,
+  ImageIcon,
 } from "@excalidraw/excalidraw/components/icons";
 
 import { NoteChatMarkdown } from "./NoteChatMarkdown";
@@ -25,6 +26,7 @@ import { NoteChatReasoning } from "./NoteChatReasoning";
 import { ChatWidgetCard } from "./ChatWidgetCard";
 import { ChatWidgetBuildCard } from "./ChatWidgetBuildCard";
 import { ChatHtmlCard } from "./ChatHtmlCard";
+import { ChatImage } from "./ChatImage";
 import { ChatIconButton } from "./ChatIconButton";
 import { AgentCommunicationLog } from "./AgentCommunicationLog";
 import "./NoteChatPanel.scss";
@@ -50,6 +52,7 @@ export const NoteChatPanel = ({
     noteId && selected && controller.isActive(noteId, selected),
   );
   const scroller = useRef<HTMLDivElement>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
   const follow = useRef(true);
   const [below, setBelow] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -95,6 +98,15 @@ export const NoteChatPanel = ({
     (noteId && selected && state.errors[`${noteId}/${selected}`]) ||
     state.errors[noteId || "unbound"];
   const draft = selected ? ui?.drafts[selected] || "" : "";
+  const draftImages = selected ? ui?.draftImages?.[selected] || [] : [];
+  const uploadKey = `${noteId}/${selected}`;
+  const uploading = Boolean(state.uploading[uploadKey]);
+  const uploadError = state.imageErrors[uploadKey];
+  const addImages = (files: File[]) => {
+    if (noteId && selected) {
+      void controller.addImages(noteId, selected, files);
+    }
+  };
   const workspace = selected ? ui?.workspaces?.[selected] : undefined;
   const canvasWidgets = controller.htmlHost?.elements() || [];
   const latestVersions = new Map<string, number>();
@@ -180,6 +192,20 @@ export const NoteChatPanel = ({
       aria-label="笔记聊天"
       onKeyDown={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes("Files")) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = "copy";
+        }
+      }}
+      onDrop={(event) => {
+        if (event.dataTransfer.files.length) {
+          event.preventDefault();
+          event.stopPropagation();
+          addImages(Array.from(event.dataTransfer.files));
+        }
+      }}
     >
       <header className="note-chat-header">
         <div>
@@ -349,6 +375,18 @@ export const NoteChatPanel = ({
                         }[message.status])}
                 </span>
               </div>
+              {!!message.attachments?.length && noteId && selected && (
+                <div className="note-chat-images">
+                  {message.attachments.map((image) => (
+                    <ChatImage
+                      key={image.id}
+                      noteId={noteId}
+                      sessionId={selected}
+                      image={image}
+                    />
+                  ))}
+                </div>
+              )}
               {message.communicationLogError && (
                 <p className="note-chat-inline-error" role="status">
                   {message.communicationLogError}
@@ -439,6 +477,34 @@ export const NoteChatPanel = ({
                       </summary>
                       <p>{activity?.name}</p>
                       {activity?.details && <pre>{activity.details}</pre>}
+                      {!!activity?.images?.length && noteId && selected && (
+                        <>
+                          <p className="note-chat-muted">
+                            发送时画布 ·{" "}
+                            {new Date(activity.snapshotAt).toLocaleString()}
+                          </p>
+                          {activity.images.map((image) => (
+                            <div key={image.id}>
+                              {image.region && (
+                                <p className="note-chat-muted">
+                                  ({image.region.x1}, {image.region.y1}) → (
+                                  {image.region.x2}, {image.region.y2})
+                                </p>
+                              )}
+                              <ChatImage
+                                noteId={noteId}
+                                sessionId={selected}
+                                image={image}
+                              />
+                            </div>
+                          ))}
+                          {activity.imageDelivery === "unsupported" && (
+                            <p role="status">
+                              当前模型暂不支持看图；截图仅供你查看，未传给模型。
+                            </p>
+                          )}
+                        </>
+                      )}
                     </details>
                   );
                 }
@@ -825,7 +891,76 @@ export const NoteChatPanel = ({
               </select>
             </details>
           )}
+          <input
+            ref={imageInput}
+            type="file"
+            hidden
+            multiple
+            accept="image/png,image/jpeg,image/webp"
+            aria-label="选择聊天图片"
+            onChange={(event) => {
+              addImages(Array.from(event.target.files || []));
+              event.target.value = "";
+            }}
+          />
+          {!!draftImages.length && (
+            <div className="note-chat-images note-chat-draft-images">
+              {draftImages.map((image) => (
+                <div key={image.id}>
+                  <ChatImage
+                    noteId={noteId}
+                    sessionId={selected}
+                    image={image}
+                  />
+                  <ChatIconButton
+                    label={`移除图片：${image.name}`}
+                    icon={CloseIcon}
+                    onClick={() =>
+                      controller.removeImage(noteId, selected, image.id)
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+          {uploading && (
+            <p className="note-chat-muted" role="status">
+              正在上传图片…
+            </p>
+          )}
+          {uploadError && (
+            <p className="note-chat-inline-error" role="alert">
+              {uploadError}
+              <ChatIconButton
+                label="重试图片上传"
+                icon={RetryIcon}
+                onClick={() => controller.retryImages(noteId, selected)}
+              />
+              <ChatIconButton
+                label="取消失败的图片上传"
+                icon={CloseIcon}
+                onClick={() => controller.clearImageError(noteId, selected)}
+              />
+            </p>
+          )}
+          {!!draftImages.length && state.vision !== true && (
+            <p className="note-chat-muted" role="status">
+              当前模型暂不支持看图（视觉能力未验证或未启用），图片仍会随消息保存。
+            </p>
+          )}
           <textarea
+            onPaste={(event) => {
+              const files = Array.from(event.clipboardData.files).filter(
+                (file) => file.type.startsWith("image/"),
+              );
+              if (files.length) {
+                event.stopPropagation();
+                if (!event.clipboardData.getData("text/plain")) {
+                  event.preventDefault();
+                }
+                addImages(files);
+              }
+            }}
             wrap="soft"
             aria-label="聊天消息"
             placeholder="讨论笔记，或描述想创建、修改的组件…"
@@ -850,15 +985,23 @@ export const NoteChatPanel = ({
             }}
           />
           <div className="note-chat-compose-actions">
-            <ChatIconButton
-              label={ui?.thinking ? "深度思考：已开启" : "深度思考：已关闭"}
-              icon={brainIcon}
-              active={ui?.thinking === true}
-              aria-pressed={ui?.thinking === true}
-              onClick={() =>
-                controller.setThinking(noteId, ui?.thinking !== true)
-              }
-            />
+            <div className="note-chat-compose-tools">
+              <ChatIconButton
+                label="上传图片"
+                icon={ImageIcon}
+                disabled={uploading}
+                onClick={() => imageInput.current?.click()}
+              />
+              <ChatIconButton
+                label={ui?.thinking ? "深度思考：已开启" : "深度思考：已关闭"}
+                icon={brainIcon}
+                active={ui?.thinking === true}
+                aria-pressed={ui?.thinking === true}
+                onClick={() =>
+                  controller.setThinking(noteId, ui?.thinking !== true)
+                }
+              />
+            </div>
             {running || generating ? (
               <ChatIconButton
                 label="停止回答"
@@ -873,7 +1016,10 @@ export const NoteChatPanel = ({
                 primary
                 type="submit"
                 disabled={
-                  !draft.trim() || controller.isUnsaved(noteId, selected)
+                  (!draft.trim() && !draftImages.length) ||
+                  uploading ||
+                  Boolean(uploadError) ||
+                  controller.isUnsaved(noteId, selected)
                 }
               />
             )}

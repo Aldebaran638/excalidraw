@@ -166,7 +166,7 @@ export class AgentTurnLog {
       at: Date.now(),
       kind,
       requestId,
-      data,
+      data: redactImages(data),
     })}\n`;
     this.pending = this.pending
       .then(async () => {
@@ -333,4 +333,27 @@ export class AgentTurnLog {
     this.flushFrames();
     await this.pending;
   }
+}
+
+/** Communication evidence keeps metadata; image bytes live in the image store. */
+export function redactImages(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(redactImages);
+  }
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    if (obj.type === "image" && typeof obj.data === "string") {
+      return {
+        ...obj,
+        data: `[image bytes omitted: ${obj.data.length} base64 chars]`,
+      };
+    }
+    return Object.fromEntries(
+      Object.entries(obj).map(([key, item]) => [key, redactImages(item)]),
+    );
+  }
+  if (typeof value === "string" && value.startsWith("data:image/")) {
+    return `[image data URL omitted: ${value.length} chars]`;
+  }
+  return value;
 }

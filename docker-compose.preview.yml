@@ -19,6 +19,8 @@ services:
       QWEN_BASE_URL: ${QWEN_BASE_URL:-http://172.31.69.234:8006/v1}
       QWEN_MODEL: ${QWEN_MODEL:-qwen3.8-27b}
       QWEN_API_KEY: ${QWEN_API_KEY:-}
+      # Enable only after the configured upstream passes a real visual probe.
+      QWEN_VISION_SUPPORTED: ${QWEN_VISION_SUPPORTED:-false}
     volumes:
       - ./.local-data/preview/notes:/opt/node_app/notes
     healthcheck:

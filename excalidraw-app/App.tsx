@@ -524,6 +524,7 @@ const ExcalidrawWrapper = () => {
   if (chats) {
     chats.ensureIdentity = ensureNoteIdentity;
     chats.capture = widgets.captureChatSnapshot;
+    chats.freezeCanvas = widgets.freezeChatCanvas;
     chats.htmlHost = widgets.htmlHost;
   }
   chatActions.current = {

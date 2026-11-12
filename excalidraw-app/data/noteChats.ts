@@ -2,6 +2,13 @@ import { randomId } from "@excalidraw/common";
 
 import { WidgetRuntimeState } from "../../packages/interactive-widgets/runtimeState";
 
+import { CHAT_IMAGE_LIMIT, CHAT_IMAGES_BYTES } from "./chatImages";
+import {
+  normalizeChatImage,
+  captureFrozenCanvas,
+  waitForChatCapture,
+} from "./canvasChatCapture";
+
 import { readSSE } from "./sse";
 import { widgetRef, sameState } from "./chatWidgets";
 import {
@@ -10,6 +17,9 @@ import {
   HTML_RUNTIME_VERSION,
 } from "./clientProtocol";
 import { applyAppUpdate } from "./appUpdate";
+
+import type { FrozenChatCanvas } from "./canvasChatCapture";
+import type { ChatImageRef } from "./chatImages";
 
 import type { HtmlArtifact, HtmlState, HtmlRef } from "./chatHtml";
 import type { AppPreviewReport } from "./appPreview";
@@ -49,6 +59,7 @@ type Context = {
 type UI = {
   selected: string | null;
   drafts: Record<string, string>;
+  draftImages?: Record<string, ChatImageRef[]>;
   scrolls: Record<string, number>;
   unread?: Record<string, boolean>;
   thinking?: boolean;
@@ -65,6 +76,9 @@ type State = {
   sessions: Record<string, ChatSession>;
   ui: Record<string, UI>;
   errors: Record<string, string>;
+  uploading: Record<string, number>;
+  imageErrors: Record<string, string>;
+  vision?: boolean;
   busy: boolean;
   storageError: string;
   artifacts: Record<string, ChatWidgetData>;
@@ -88,6 +102,8 @@ export class NoteChatController {
     sessions: {},
     ui: {},
     errors: {},
+    uploading: {},
+    imageErrors: {},
     busy: false,
     storageError: "",
     artifacts: {},
@@ -103,6 +119,7 @@ export class NoteChatController {
   private deleted = new Set<string>();
   public widgetHost?: ChatWidgetHost;
   public htmlHost?: HtmlChatHost;
+  public freezeCanvas?: () => Promise<FrozenChatCanvas>;
   private htmlTrials = new Map<string, HtmlState>();
   private htmlInspections = new Map<string, () => AppPreviewReport | null>();
   setHtmlInspection(
@@ -179,7 +196,7 @@ export class NoteChatController {
   private blockSequences = new Map<string, number>();
   private active = new Map<
     string,
-    { turnId: string; abort: AbortController }
+    { turnId: string; abort: AbortController; captureAbort?: AbortController }
   >();
   constructor(
     private ownerWindow: BrowserWindow,
@@ -238,6 +255,12 @@ export class NoteChatController {
   async checkClientVersion() {
     try {
       const info = await this.request("/api/client-info");
+      try {
+        this.state.vision =
+          (await this.request("/api/ai/capabilities")).vision === true;
+      } catch {
+        this.state.vision = false;
+      }
       const entry = this.ownerWindow.document
         .querySelector<HTMLScriptElement>('script[type="module"][src]')
         ?.src.split("/")
@@ -318,6 +341,87 @@ export class NoteChatController {
       ...ui,
       drafts: { ...ui.drafts, [sessionId]: content },
     });
+  }
+  removeImage(noteId: string, sessionId: string, imageId: string) {
+    const ui = this.state.ui[noteId] || blankUI();
+    this.saveUI(noteId, {
+      ...ui,
+      draftImages: {
+        ...ui.draftImages,
+        [sessionId]: (ui.draftImages?.[sessionId] || []).filter(
+          (r) => r.id !== imageId,
+        ),
+      },
+    });
+  }
+  private failedImageUploads = new Map<string, File[]>();
+  clearImageError(noteId: string, sessionId: string) {
+    const key = `${noteId}/${sessionId}`;
+    this.failedImageUploads.delete(key);
+    this.state.imageErrors = { ...this.state.imageErrors, [key]: "" };
+    this.emit();
+  }
+  retryImages(noteId: string, sessionId: string) {
+    void this.addImages(
+      noteId,
+      sessionId,
+      this.failedImageUploads.get(`${noteId}/${sessionId}`) || [],
+    );
+  }
+  async addImages(noteId: string, sessionId: string, files: File[]) {
+    const key = `${noteId}/${sessionId}`;
+    if (this.state.uploading[key]) {
+      return;
+    }
+    this.state.uploading = { ...this.state.uploading, [key]: files.length };
+    this.state.imageErrors = { ...this.state.imageErrors, [key]: "" };
+    this.emit();
+    let index = 0;
+    try {
+      for (const file of files) {
+        const current = this.state.ui[noteId]?.draftImages?.[sessionId] || [];
+        if (current.length >= CHAT_IMAGE_LIMIT) {
+          throw new Error("每条消息最多 5 张图片，已上传的图片已保留");
+        }
+        const data = await normalizeChatImage(this.ownerWindow.document, file);
+        if (
+          current.reduce((sum, ref) => sum + ref.bytes, 0) +
+            Math.ceil((data.length * 3) / 4) >
+          CHAT_IMAGES_BYTES
+        ) {
+          throw new Error("附件合计不能超过 8MB，已上传图片已保留");
+        }
+        const image: ChatImageRef = await this.request(
+          `${this.url(noteId, sessionId)}/images`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ data, name: file.name }),
+          },
+        );
+        if (this.deleted.has(key)) {
+          return;
+        }
+        const ui = this.state.ui[noteId] || blankUI();
+        this.saveUI(noteId, {
+          ...ui,
+          draftImages: {
+            ...ui.draftImages,
+            [sessionId]: [...(ui.draftImages?.[sessionId] || []), image],
+          },
+        });
+        index++;
+      }
+    } catch (error) {
+      this.failedImageUploads.set(key, files.slice(index));
+      this.state.imageErrors = {
+        ...this.state.imageErrors,
+        [key]: (error as Error).message,
+      };
+    } finally {
+      this.state.uploading = { ...this.state.uploading, [key]: 0 };
+      this.emit();
+    }
   }
   setThinking(noteId: string, thinking: boolean) {
     this.saveUI(noteId, { ...(this.state.ui[noteId] || blankUI()), thinking });
@@ -932,6 +1036,9 @@ export class NoteChatController {
     }
   }
   async stop(noteId: string, id: string) {
+    this.active
+      .get(`${noteId}/${id}`)
+      ?.captureAbort?.abort(new Error("截图已停止"));
     const session = this.state.sessions[`${noteId}/${id}`];
     const turnId =
       this.active.get(`${noteId}/${id}`)?.turnId ||
@@ -985,20 +1092,38 @@ export class NoteChatController {
     const retry = session?.messages.find(
       (message) => message.id === retryMessageId && message.role === "user",
     );
+    const originalQuestion =
+      regeneratedQuestion ||
+      retry ||
+      (replacement
+        ? session?.messages.find((m) => m.id === replacement.messageId)
+        : undefined);
+    const attachments =
+      originalQuestion?.attachments ||
+      (replacement ? [] : this.state.ui[noteId]?.draftImages?.[id] || []);
     const content =
       replacement?.content ??
       regeneratedQuestion?.content ??
       retry?.content ??
-      this.state.ui[noteId]?.drafts[id]?.trim();
+      this.state.ui[noteId]?.drafts[id]?.trim() ??
+      "";
     if (
-      !content?.trim() ||
+      (!content.trim() && !attachments.length) ||
+      Boolean(this.state.uploading[key]) ||
+      Boolean(this.state.imageErrors[key]) ||
       !session ||
       this.active.has(key) ||
       this.state.context.noteId !== noteId
     ) {
       return;
     }
-    const snapshot = this.capture();
+    let snapshot = this.capture();
+    const frozenPending = originalQuestion
+      ? undefined
+      : this.freezeCanvas?.().then(
+          (value) => ({ value }),
+          (error: Error) => ({ error }),
+        );
     const documentSession = this.state.context.documentSession;
     const legacySelection = this.state.ui[noteId]?.workspaces?.[id];
     if (
@@ -1101,6 +1226,32 @@ export class NoteChatController {
     this.emit();
     let terminal = false;
     try {
+      let snapshotId = originalQuestion?.canvasSnapshotId;
+      if (snapshotId) {
+        const frozen = await this.request(
+          `${this.url(noteId, id)}/canvas-snapshots/${snapshotId}`,
+        );
+        snapshot = frozen.noteSnapshot || frozen;
+      } else if (!originalQuestion && frozenPending) {
+        const frozen = await frozenPending;
+        if ("error" in frozen) {
+          throw frozen.error;
+        }
+        await this.request(
+          `${this.url(noteId, id)}/canvas-snapshots/${turnId}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...frozen.value,
+              noteSnapshot: snapshot,
+              capturedAt: snapshot.capturedAt,
+            }),
+            signal: abort.signal,
+          },
+        );
+        snapshotId = turnId;
+      }
       const response = await this.ownerWindow.fetch(
         `${this.url(noteId, id)}/turns`,
         {
@@ -1115,6 +1266,8 @@ export class NoteChatController {
             replaceMessageId: replacement?.messageId,
             thinking: this.state.ui[noteId]?.thinking === true,
             snapshot,
+            canvasSnapshotId: snapshotId,
+            attachments,
             workspace,
             workspacePreview:
               inspect && inspectionRef
@@ -1171,6 +1324,61 @@ export class NoteChatController {
           event.sessionId !== id ||
           event.turnId !== turnId
         ) {
+          continue;
+        }
+        if (event.type === "capture_request" && event.capture) {
+          const capture = event.capture;
+          const feedback = `${this.url(
+            noteId,
+            id,
+          )}/turns/${turnId}/captures/${encodeURIComponent(capture.requestId)}`;
+          try {
+            if (!snapshotId || capture.snapshotId !== snapshotId) {
+              throw new Error("截图请求与发送时的笔记不匹配");
+            }
+            const frozen = await this.request(
+              `${this.url(noteId, id)}/canvas-snapshots/${snapshotId}`,
+              { signal: abort.signal },
+            );
+            const captureAbort = new this.ownerWindow.AbortController();
+            const stopCapture = () => captureAbort.abort(abort.signal.reason);
+            abort.signal.addEventListener("abort", stopCapture, { once: true });
+            this.active.get(key)!.captureAbort = captureAbort;
+            let data: string;
+            try {
+              data = await waitForChatCapture(
+                this.ownerWindow.document,
+                captureFrozenCanvas(
+                  this.ownerWindow.document,
+                  frozen,
+                  capture.region,
+                ),
+                captureAbort.signal,
+              );
+            } finally {
+              abort.signal.removeEventListener("abort", stopCapture);
+              const running = this.active.get(key);
+              if (running?.captureAbort === captureAbort) {
+                delete running.captureAbort;
+              }
+            }
+            abort.signal.throwIfAborted();
+            await this.request(feedback, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ data }),
+              signal: abort.signal,
+            });
+          } catch (error) {
+            if (!abort.signal.aborted) {
+              await this.request(feedback, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ error: (error as Error).message }),
+                signal: abort.signal,
+              }).catch(() => {});
+            }
+          }
           continue;
         }
         if (event.session) {
@@ -1306,10 +1514,21 @@ export class NoteChatController {
           event.type === "start" &&
           !retry &&
           !replacement &&
-          !regenerateMessageId &&
-          this.state.ui[noteId]?.drafts[id]?.trim() === content.trim()
+          !regenerateMessageId
         ) {
-          this.setDraft(noteId, id, "");
+          if (this.state.ui[noteId]?.drafts[id]?.trim() === content.trim()) {
+            this.setDraft(noteId, id, "");
+          }
+          const ui = this.state.ui[noteId] || blankUI();
+          this.saveUI(noteId, {
+            ...ui,
+            draftImages: {
+              ...ui.draftImages,
+              [id]: (ui.draftImages?.[id] || []).filter(
+                (r) => !attachments.some((sent) => sent.id === r.id),
+              ),
+            },
+          });
         }
         const current = this.state.sessions[key];
         if (event.block && event.sequence) {

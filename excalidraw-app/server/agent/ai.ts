@@ -4,11 +4,17 @@ import { generateWidget, WidgetGenerationError } from "./widgetGeneration";
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-export type AIConfig = { baseUrl: string; model: string; apiKey?: string };
+export type AIConfig = {
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+  vision?: boolean;
+};
 export const aiConfigFromEnv = (): AIConfig => ({
   baseUrl: process.env.QWEN_BASE_URL || "http://172.31.69.234:8006/v1",
   model: process.env.QWEN_MODEL || "qwen3.8-27b",
   apiKey: process.env.QWEN_API_KEY,
+  vision: process.env.QWEN_VISION_SUPPORTED === "true",
 });
 export const createAIHandler = (
   config: AIConfig,

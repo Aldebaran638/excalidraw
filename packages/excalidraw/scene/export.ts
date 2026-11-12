@@ -192,11 +192,14 @@ export const exportToCanvas = async (
     exportPadding = DEFAULT_EXPORT_PADDING,
     viewBackgroundColor,
     exportingFrame,
+    exportBounds,
   }: {
     exportBackground: boolean;
     exportPadding?: number;
     viewBackgroundColor: string;
     exportingFrame?: NonDeleted<ExcalidrawFrameLikeElement> | null;
+    /** Exact scene crop, preserving normal frame outlines, labels and clipping. */
+    exportBounds?: { x: number; y: number; width: number; height: number };
   },
   createCanvas: (
     width: number,
@@ -211,6 +214,15 @@ export const exportToCanvas = async (
     await Fonts.loadElementsFonts(elements);
   },
 ) => {
+  if (
+    exportBounds &&
+    (exportingFrame ||
+      !Object.values(exportBounds).every(Number.isFinite) ||
+      exportBounds.width <= 0 ||
+      exportBounds.height <= 0)
+  ) {
+    throw new Error("Invalid export bounds or conflicting frame export");
+  }
   // load font faces before continuing, by default leverages browsers' [FontFace API](https://developer.mozilla.org/en-US/docs/Web/API/FontFace)
   await loadFonts();
   await captureEmbeddableSnapshots(elements);
@@ -239,10 +251,15 @@ export const exportToCanvas = async (
     exportPadding = 0;
   }
 
-  const [minX, minY, width, height] = getCanvasSize(
-    exportingFrame ? [exportingFrame] : getRootElements(elementsForRender),
-    exportPadding,
-  );
+  if (exportBounds) {
+    exportPadding = 0;
+  }
+  const [minX, minY, width, height] = exportBounds
+    ? [exportBounds.x, exportBounds.y, exportBounds.width, exportBounds.height]
+    : getCanvasSize(
+        exportingFrame ? [exportingFrame] : getRootElements(elementsForRender),
+        exportPadding,
+      );
 
   const { canvas, scale = 1 } = createCanvas(width, height);
 

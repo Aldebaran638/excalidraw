@@ -506,3 +506,98 @@ it("regenerates a specific answer without editing its question or clearing the d
   expect(controller.getState().ui[noteId].drafts[session.id]).toBe("first");
   controller.dispose();
 });
+
+it("preserves image-only input and pending attachment references across refresh and regeneration", async () => {
+  const image = {
+    id: "image-id-123456",
+    name: "图片.png",
+    width: 2,
+    height: 2,
+    bytes: 100,
+    sha256: "hash",
+    mimeType: "image/png" as const,
+    source: "upload" as const,
+  };
+  const question = {
+    id: "question-image-12345",
+    turnId: "turn-image-123456",
+    role: "user" as const,
+    content: "",
+    status: "complete" as const,
+    createdAt: 1,
+    attachments: [image],
+    canvasSnapshotId: "snapshot-original-12345",
+  };
+  const answer = {
+    id: "answer-image-123456",
+    turnId: question.turnId,
+    role: "assistant" as const,
+    content: "old",
+    status: "complete" as const,
+    createdAt: 2,
+  };
+  const current = { ...session, messages: [question, answer] };
+  const calls: any[] = [];
+  const fetch = vi.fn(async (url, init) => {
+    if (String(url).includes("/canvas-snapshots/")) {
+      return json({
+        capturedAt: 1,
+        elements: [],
+        noteSnapshot: { capturedAt: 1, elements: [{ id: "original-shape" }] },
+      });
+    }
+    if (String(url).endsWith("/turns")) {
+      const body = JSON.parse(String(init?.body));
+      calls.push(body);
+      const common = { noteId, sessionId: session.id, turnId: body.turnId };
+      return new Response(
+        [
+          { ...common, type: "start", session: current },
+          { ...common, type: "done", saved: true, session: current },
+        ]
+          .map((e) => `data: ${JSON.stringify(e)}\n\n`)
+          .join(""),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    }
+    return String(url).endsWith(`/chats/${session.id}`)
+      ? json(current)
+      : json({ sessions: [current] });
+  }) as typeof globalThis.fetch;
+  const win = browser(fetch);
+  win.localStorage.setItem(
+    `note-chat-ui:${noteId}`,
+    JSON.stringify({
+      selected: session.id,
+      drafts: { [session.id]: "不要清空新草稿" },
+      scrolls: {},
+      draftImages: { [session.id]: [image] },
+    }),
+  );
+  const controller = new NoteChatController(
+    win,
+    async () => ({ noteId, name: "test" }),
+    () => ({ capturedAt: 99, elements: [{ id: "new-shape" }] }),
+  );
+  controller.bind({ noteId, name: "test", documentSession: 1 });
+  await controller.select(noteId, session.id);
+  expect(controller.getState().ui[noteId].draftImages?.[session.id]).toEqual([
+    image,
+  ]);
+  await controller.regenerate(noteId, session.id, answer.id);
+  expect(calls[0].content).toBe("");
+  expect(calls[0].attachments).toEqual([image]);
+  expect(calls[0].canvasSnapshotId).toBe(question.canvasSnapshotId);
+  expect(calls[0].snapshot.elements[0].id).toBe("original-shape");
+  expect(controller.getState().ui[noteId].drafts[session.id]).toBe(
+    "不要清空新草稿",
+  );
+  expect(controller.getState().ui[noteId].draftImages?.[session.id]).toEqual([
+    image,
+  ]);
+  controller.removeImage(noteId, session.id, image.id);
+  expect(controller.getState().ui[noteId].draftImages?.[session.id]).toEqual(
+    [],
+  );
+  controller.dispose();
+});

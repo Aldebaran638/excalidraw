@@ -25,6 +25,16 @@ const paging = {
 };
 export const NOTE_TOOLS = [
   functionTool(
+    "capture_note_region",
+    "Capture an exact rectangle of the canvas frozen when this user message was sent. Coordinates are scene coordinates, not screen pixels. Includes drawings, text, uploaded images and supported HTML apps; no editor UI. Use get_note_outline/read_note_elements for element coordinates. The returned image is attached only if the configured model supports vision; otherwise it remains available to the user and you must not claim to see it.",
+    {
+      x1: { type: "number" },
+      y1: { type: "number" },
+      x2: { type: "number" },
+      y2: { type: "number" },
+    },
+  ),
+  functionTool(
     "get_note_outline",
     "Read a page of the current canvas outline, labels and group IDs; no other notes.",
     paging,

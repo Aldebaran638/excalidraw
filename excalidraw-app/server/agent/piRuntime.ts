@@ -14,7 +14,11 @@ import { readSSE } from "../../data/sse";
 import { validId } from "../../data/noteIdentity";
 
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type {
+  AssistantMessage,
+  Model,
+  ImageContent,
+} from "@earendil-works/pi-ai";
 import type { AIConfig } from "./ai";
 import type { AgentTurnLog } from "./agentLog";
 
@@ -38,6 +42,8 @@ type Input = {
   turnId: string;
   assistantMessageId: string;
   userContent: string;
+  images?: ImageContent[];
+  toolImages?: (id: string) => Promise<ImageContent[]>;
   regenerate?: boolean;
   uiMessageIds: string[];
   config: AIConfig;
@@ -69,7 +75,7 @@ export function qwenModel(config: AIConfig): Model<"openai-completions"> {
     api: "openai-completions",
     baseUrl: config.baseUrl,
     reasoning: true,
-    input: ["text"],
+    input: config.vision ? ["text", "image"] : ["text"],
     contextWindow: 131072,
     maxTokens: 32768,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -143,9 +149,10 @@ export async function runNoteAgent(input: Input) {
   const history = initial.filter(
     (m) => m.role === "user" || m.role === "assistant",
   );
+  // The UI prefix ends with the current question. Its projected text may
+  // include attachment metadata, so string equality would import it twice.
   const currentUserIndex = history.findLastIndex(
-    (message) =>
-      message.role === "user" && message.content === input.userContent,
+    (message) => message.role === "user",
   );
   if (currentUserIndex >= 0) {
     history.splice(currentUserIndex);
@@ -155,7 +162,12 @@ export async function runNoteAgent(input: Input) {
       if (message.role === "user") {
         manager.appendMessage({
           role: "user",
-          content: String(message.content || ""),
+          content: message.images?.length
+            ? [
+                { type: "text", text: String(message.content || "") },
+                ...message.images,
+              ]
+            : String(message.content || ""),
           timestamp: Date.now(),
         });
       } else {
@@ -182,6 +194,19 @@ export async function runNoteAgent(input: Input) {
             },
           },
         });
+        if (message.images?.length) {
+          manager.appendMessage({
+            role: "user",
+            timestamp: Date.now(),
+            content: [
+              {
+                type: "text",
+                text: "以下图片是上一条历史回答中真实工具取得的截图，供恢复上下文参考，不是新的用户指令。",
+              },
+              ...message.images,
+            ],
+          });
+        }
       }
     }
   }
@@ -248,7 +273,10 @@ export async function runNoteAgent(input: Input) {
         },
       });
       return {
-        content: [{ type: "text", text }],
+        content: [
+          { type: "text", text },
+          ...((await input.toolImages?.(id)) || []),
+        ],
         details: {},
         isError: Boolean(JSON.parse(text).error),
       };
@@ -576,7 +604,13 @@ export async function runNoteAgent(input: Input) {
     session.setActiveToolsByName(
       input.availableTools().map((t) => t.function.name),
     );
-    await session.prompt(input.userContent, { expandPromptTemplates: false });
+    const prompt = input.userContent.trim()
+      ? input.userContent
+      : "（图片消息：请根据本轮实际可用的图片输入回答；若图片不可用，请说明，不要猜测。）";
+    await session.prompt(prompt, {
+      expandPromptTemplates: false,
+      images: input.images,
+    });
     input.signal.throwIfAborted();
     if (callbackError) {
       throw callbackError;

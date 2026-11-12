@@ -24,6 +24,8 @@ import type {
 
 import type { ExcalidrawEmbeddableElement } from "@excalidraw/element/types";
 
+import { freezeChatCanvas } from "../data/canvasChatCapture";
+
 import { readCanvasHtmlApp } from "../data/chatHtml";
 import { forkHtmlApps } from "../data/htmlApps";
 import { HtmlAppView } from "../components/HtmlAppView";
@@ -525,6 +527,17 @@ export const useCanvasHtmlApps = ({
           JSON.stringify(app.state) !== JSON.stringify(runtime.state())
         );
       }),
+    freezeChatCanvas: () => {
+      if (!api) {
+        return Promise.reject(new Error("画布尚未就绪"));
+      }
+      return freezeChatCanvas(api, (id) => {
+        const runtime = runtimes.current.get(id);
+        return runtime
+          ? runtime.capture()
+          : Promise.reject(new Error("应用尚未启动，不能获取发送时画面"));
+      });
+    },
     captureChatSnapshot: () => ({
       capturedAt: Date.now(),
       elements: (api?.getSceneElements() || []).map((e) => {

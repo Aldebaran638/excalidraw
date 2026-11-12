@@ -1,3 +1,4 @@
+import type { ChatImageRef, CanvasRegion } from "./chatImages";
 import type { ChatWidgetRef } from "./chatWidgets";
 import type { ChatBlock } from "./chatHtml";
 import type { ChatWorkspace } from "./chatWidgets";
@@ -15,6 +16,8 @@ export type ChatActivity = {
   name: string;
   status: "reading" | "complete" | "failed";
   errorCode?: string;
+  images?: ChatImageRef[];
+  imageDelivery?: "pending" | "sent" | "unsupported";
   elementIds: string[];
   snapshotAt: number;
   summary?: string;
@@ -32,6 +35,8 @@ export type ChatMessage = {
   turnId: string;
   role: "user" | "assistant";
   content: string;
+  attachments?: ChatImageRef[];
+  canvasSnapshotId?: string;
   thinking?: boolean;
   reasoning?: string;
   runtimeStatus?: string;
@@ -81,6 +86,7 @@ export type NoteSnapshot = {
 };
 export type ChatEvent = {
   type:
+    | "capture_request"
     | "start"
     | "workspace"
     | "block"
@@ -95,6 +101,7 @@ export type ChatEvent = {
     | "tool_end"
     | "done"
     | "error";
+  capture?: { requestId: string; region: CanvasRegion; snapshotId: string };
   block?: ChatBlock;
   blockDelta?: string;
   sequence?: number;
